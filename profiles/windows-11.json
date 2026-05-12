@@ -1,0 +1,11 @@
+{
+  "schema_version": "1",
+  "profile_id": "windows-11",
+  "platform": "windows",
+  "distribution": "windows",
+  "version": "11",
+  "arch": "x86_64",
+  "notes": [
+    "intended for offline installer and file deployment support in later phases"
+  ]
+}

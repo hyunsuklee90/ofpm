@@ -1,0 +1,13 @@
+.venv/
+.agents/
+.codex/
+__pycache__/
+*.pyc
+
+dist/
+exports/
+store/
+runtime/
+incoming/
+
+local/artifact-roots.json

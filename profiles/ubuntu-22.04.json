@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "profile_id": "ubuntu-22.04",
+  "platform": "linux",
+  "distribution": "ubuntu",
+  "version": "22.04",
+  "arch": "x86_64",
+  "notes": [
+    "baseline ubuntu-like target for offline restore tests",
+    "use full bundle when state origin is unknown"
+  ]
+}

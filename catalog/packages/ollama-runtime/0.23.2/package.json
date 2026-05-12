@@ -1,0 +1,26 @@
+{
+  "schema_version": "1",
+  "package_id": "ollama-runtime",
+  "version": "0.23.2",
+  "profile_id": "ubuntu-22.04",
+  "install_root": "payloads/ollama-runtime/0.23.2",
+  "depends": [],
+  "metadata": {
+    "description": "offline ollama runtime artifacts imported from harness/pi",
+    "source_kind": "artifact",
+    "artifact_root_id": "pi",
+    "origin_relroot": "ollama"
+  },
+  "files": [
+    {
+      "source_relpath": "ollama/ollama",
+      "target": "bin/ollama",
+      "mode": "0755"
+    },
+    {
+      "source_relpath": "ollama/ollama-linux-amd64.tar.zst",
+      "target": "archives/ollama-linux-amd64.tar.zst",
+      "mode": "0644"
+    }
+  ]
+}

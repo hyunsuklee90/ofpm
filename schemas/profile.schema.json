@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ofpm/profile.schema.json",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "platform"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "profile_id": {"type": "string"},
+    "platform": {"type": "string"},
+    "distribution": {"type": "string"},
+    "version": {"type": "string"},
+    "arch": {"type": "string"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}

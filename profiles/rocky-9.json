@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "profile_id": "rocky-9",
+  "platform": "linux",
+  "distribution": "rocky",
+  "version": "9",
+  "arch": "x86_64",
+  "notes": [
+    "memory-sensitive targets may restore correctly but still fail at runtime",
+    "runtime validation should include process execution, not only metadata checks"
+  ]
+}

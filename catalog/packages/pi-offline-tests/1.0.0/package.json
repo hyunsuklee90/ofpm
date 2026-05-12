@@ -1,0 +1,72 @@
+{
+  "schema_version": "1",
+  "package_id": "pi-offline-tests",
+  "version": "1.0.0",
+  "profile_id": "ubuntu-22.04",
+  "install_root": "verification/pi-offline-tests/1.0.0",
+  "depends": [
+    {
+      "package_id": "node-runtime",
+      "version": "24.13.1",
+      "required": false,
+      "reason": "used by the offline installation flow under test"
+    },
+    {
+      "package_id": "ollama-runtime",
+      "version": "0.23.2",
+      "required": false,
+      "reason": "used by the offline restore and runtime validation flow"
+    },
+    {
+      "package_id": "ollama-model-gemma4-e4b",
+      "version": "1.0.0",
+      "required": false,
+      "reason": "used by the offline model restore validation flow"
+    },
+    {
+      "package_id": "pi-agent",
+      "version": "0.74.0",
+      "required": false,
+      "reason": "used by the end-to-end offline CLI validation flow"
+    }
+  ],
+  "metadata": {
+    "description": "docker-based offline verification scripts imported from harness/pi",
+    "source_kind": "verification",
+    "artifact_root_id": "pi",
+    "origin_relroot": "."
+  },
+  "files": [
+    {
+      "source_relpath": "install-offline-wsl.sh",
+      "target": "install-offline-wsl.sh",
+      "mode": "0755"
+    },
+    {
+      "source_relpath": "restore-gemma-models.sh",
+      "target": "restore-gemma-models.sh",
+      "mode": "0755"
+    },
+    {
+      "source_relpath": "backup-gemma-models.sh",
+      "target": "backup-gemma-models.sh",
+      "mode": "0755"
+    },
+    {
+      "source_relpath": "docker-run-tests.sh",
+      "target": "docker-run-tests.sh",
+      "mode": "0755"
+    },
+    {
+      "source_relpath": "test-offline-docker.sh",
+      "target": "test-offline-docker.sh",
+      "mode": "0755"
+    },
+    {
+      "source_dir_relpath": "docker",
+      "target_dir": "docker",
+      "file_count_hint": 2,
+      "mode": "0644"
+    }
+  ]
+}
