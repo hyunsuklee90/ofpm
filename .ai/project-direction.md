@@ -4,136 +4,65 @@
 
 `ofpm` is a personal offline package manager.
 
-Its interface should feel familiar to users of `apt`, `yum`, or `dnf`, even when the implementation is specialized for offline bundle and patch workflows.
+Its interface should feel familiar to users of `apt`, `yum`, or `dnf`, while using a portable repo snapshot as the main transfer unit.
 
-It is intended to manage:
+The intended flow is:
 
-- Linux offline install bundles
-- WSL distro-specific installs
-- Rocky/Red Hat-family targets
-- Windows offline files and installers
-- Conda/Anaconda payloads and environments
-- compiler and binary toolchains
-- large blobs such as Ollama models
-- personal scripts, config, and development environment assets
-
-The project should support both:
-
-- full bundles
-- patch/update bundles
+- builder-side local sources or provider downloads
+- import into an `ofpm` repo
+- copy the repo to the target machine
+- register the repo and run offline package-manager commands
 
 ## Design Principles
 
-- content-addressed blob store by `sha256`
+- repo snapshot first, bundle workflow later if ever needed
+- content kept under repo-managed `catalog/` and `artifacts/`
 - target-aware management by profile and install root kind
-- recorded target state used to decide applicability of full vs patch
-- large blobs handled as complete new blobs rather than binary diff
-- old or unknown states should be allowed to fall back to full bundle reinstall
-- command and output conventions should stay as close as practical to mainstream package manager UX
+- recorded target state for install, verify, and later upgrade decisions
+- command and output conventions kept close to mainstream package manager UX
 
-## Online vs Offline Split
+## Builder vs Target Split
 
-`ofpm` should clearly separate:
+Builder-side commands:
 
-- target-side offline package management
-- builder-side online artifact fetching
+- `ofpm source add <name> <path>`
+- `ofpm source show <name>`
+- `ofpm repo import <repo> --source <name> --package <package>`
+- `ofpm apt list`
+- `ofpm apt show <package>`
+- `ofpm apt download <package>`
+- `ofpm apt import <repo> <package>`
 
-Target-side commands should assume no network.
-Builder-side fetch commands may use network, but only to prepare artifacts for later offline installation.
+Target-side commands:
 
-The initial explicit fetch direction is:
+- `ofpm list`
+- `ofpm show <package>`
+- `ofpm install <package>`
+- `ofpm upgrade <package>`
+- `ofpm remove <package>`
+- `ofpm verify <package>`
+- `ofpm state`
 
-- `ofpm fetch apt <package>`
+## Managed State Direction
 
-The initial explicit transfer direction is:
+Managed installs should keep tool-owned JSON state under the managed root.
 
-- `ofpm export <bundle-name> --package ...`
+Phase-1 state split:
 
-This should generate either:
+- `state/installed/`
+- `state/receipts/`
+- `state/ownership/`
+- `state/history.json`
 
-- a bundle directory
-- or a bundle `tar.gz`
+## Repo Model
 
-with a manifest that describes exactly what was exported.
+Users should not need to hand-edit `catalog/` and `artifacts/` in normal flows.
 
-Later expansions may include:
+The CLI should own repo structure details:
 
-- `ofpm fetch dnf <package>`
-- `ofpm fetch pip <package>`
-- `ofpm fetch npm <package>`
-- `ofpm fetch conda <package>`
+- local source registration under `local/`
+- package definitions under `repos/<name>/catalog/packages/`
+- provider snapshots under `repos/<name>/catalog/providers/`
+- payloads under `repos/<name>/artifacts/`
 
-## UX Guidance
-
-- Prefer familiar package manager verbs and flows.
-- The user should be able to learn package-manager concepts by using `ofpm`.
-- Use `yum`/`dnf` as the main CLI model, while borrowing selective `apt` wording when it is clearer.
-- Good examples for future command shape:
-  - `ofpm list`
-  - `ofpm show <package>`
-  - `ofpm install <package>`
-  - `ofpm upgrade <package>`
-  - `ofpm verify <package>`
-  - `ofpm state`
-- Because this project is offline-focused, commands should also surface bundle, patch, profile, and verification details that normal online package managers often hide.
-
-## Managed Root Policy
-
-Use managed roots instead of scattering owned files across arbitrary locations.
-
-- system root: `/opt/ofpm`
-- user root: `$HOME/.ofpm`
-
-Inside those roots, keep package-owned content isolated from unrelated user or system files.
-
-Phase 1 does not require automatic PATH integration.
-Running tools from inside the managed root is acceptable.
-When desired, `ofpm` should be able to print shell configuration that makes managed tools win in PATH order.
-
-## Runtime Assumption
-
-Phase 1 assumes `python3` is already available on Linux/WSL targets.
-
-This is a manager-level prerequisite, not necessarily a payload-level prerequisite.
-
-- `ofpm` manager depends on Python
-- managed packages may or may not depend on Python themselves
-
-Support for no-Python targets is deferred.
-
-## Package Separation Guidance
-
-Recommended early package split:
-
-- `ollama-runtime`
-- `ollama-model-gemma4-e4b`
-- `node-runtime`
-- `pi-app`
-- `personal-config`
-
-Why separate runtime and model:
-
-- version cadence differs
-- model blobs are very large
-- patching strategy differs
-- verification strategy differs
-
-## Verification Guidance
-
-Offline restore must not be judged only by superficial listing commands.
-
-For Ollama-style assets, eventual verification should include:
-
-- manifest-to-blob closure checks
-- blob integrity checks
-- metadata/show checks
-- real execution checks where feasible
-
-Restore success and runtime resource success must be tracked separately.
-
-Example:
-
-- manifest/blob closure restored correctly
-- runtime still fails because target memory is insufficient
-
-Those are different problem classes and should not be collapsed into one status.
+The copied repo directory is the offline delivery unit.

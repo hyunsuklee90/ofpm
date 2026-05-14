@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ofpm/ownership.schema.json",
+  "type": "object",
+  "required": ["schema_version", "kind", "name", "owners"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"type": "string"},
+    "name": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "owners": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["package_id", "package_version", "provider", "strategy", "receipt_id"],
+        "properties": {
+          "package_id": {"type": "string"},
+          "package_version": {"type": "string"},
+          "provider": {"type": "string"},
+          "strategy": {"type": "string"},
+          "receipt_id": {"type": "string"}
+        }
+      }
+    }
+  }
+}

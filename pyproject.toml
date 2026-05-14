@@ -5,14 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ofpm"
 version = "0.1.0"
-description = "Offline package, bundle, and patch management scaffold"
+description = "Offline package manager scaffold"
 requires-python = ">=3.10"
 
 [project.scripts]
 ofpm = "ofpm.cli:main"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]

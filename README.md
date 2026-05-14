@@ -1,241 +1,204 @@
 # ofpm
 
-Personal offline package, bundle, and patch management scaffold.
+Personal offline package manager scaffold with a portable repo snapshot model.
 
-CLI direction:
+## Direction
 
-- primary command style follows `yum`/`dnf`
-- selected wording may borrow from `apt`
-- preferred command set is:
-  - `list`
-  - `show`
-  - `install`
-  - `upgrade`
-  - `remove`
-  - `verify`
-  - `state`
-  - `env`
-  - `export`
-  - `fetch apt`
+- target-side usage should feel closer to a private offline `apt`/`yum`/`dnf`
+- the main transfer unit is a portable repo directory, not a bundle archive
+- builder-side commands prepare package content inside a repo
+- target-side commands read from registered repos and remain offline-only
 
-Current phase-1 status:
+## Execution
+
+During development, run directly from the repo with:
+
+```bash
+python3 -m ofpm ...
+```
+
+If installed with `pip`, the `ofpm` command is created automatically from the package entrypoint.
+
+For a non-`pip` site install, generate a launcher script at the desired command path:
+
+```bash
+python3 -m ofpm install-cli /opt/ofpm/bin/ofpm
+```
+
+That launcher points at the current `ofpm` source tree and runs `python -m ofpm` with the correct `PYTHONPATH`.
+If you omit the output path, `ofpm` creates `./ofpm` in the current directory when that path is free.
+
+## Current Phase-1 Status
 
 - `list`, `show`, `verify`, and `state` are implemented as working commands
-- `verify-source` performs heavier source artifact checks and is intended to be used less often
 - `node-runtime` supports a real phase-1 install/remove loop under a managed root
 - `env` prints managed-root PATH setup for one-shot use or shell config
-- `export` creates a real offline transfer unit as a bundle directory or `tar.gz`
-- `install`, `upgrade`, and `remove` currently print execution plans and decision context
-- `fetch apt` currently prints builder-side acquisition plans
-- lower-level bundle commands remain available for scaffold work:
-  - `pack-full`
-  - `pack-patch`
-  - `apply`
-  - `show-manifest`
-
-Target vs builder split:
-
-- target-side commands are intended to stay offline-only
-- builder-side `fetch ...` commands are where online acquisition belongs
-- default target policy assumes `OFPM_OFFLINE_STRICT=1`
-- recommended transfer workflow is `ofpm export ...`, not manual file picking
-
-Catalog visibility policy:
-
-- `ofpm list` shows only packages whose referenced artifact sources currently exist
-- `ofpm list --all` includes package definitions whose artifact sources are currently missing
-- `ofpm show <package>` reports missing artifact sources explicitly
-- actual artifact root paths are configured locally, outside Git-tracked package metadata
-- deep source validation belongs in `ofpm verify-source <package>`, not in normal `list/show`
-
-This repository is a minimal first-pass system for:
-
-- content-addressed blob storage (`sha256`)
-- full bundle export/import
-- simple patch bundle export/import
-- target profile metadata
-- target machine state recording
-- offline apply and verify flow
-
-The initial implementation is intentionally conservative:
-
-- package metadata is JSON
-- bundle payloads are `.tar.gz`
-- large files are stored as complete blobs, not binary diffs
-- patch bundles replace changed files and remove deleted files
-- state is recorded from the applied bundle and verified against target files
+- `env package <pkg> --format modulefile` prints a modulefile on demand
+- `source` manages local builder-side source paths
+- `repo import` copies registered local sources into repo-managed package content
+- `apt download` stores apt snapshots inside the repo
+- `apt import` turns a downloaded apt snapshot into a repo package definition
 
 ## Repository Layout
 
-- `src/ofpm/`: CLI implementation
-- `scripts/ofpm.py`: runnable entrypoint
-- `schemas/`: JSON schema drafts for package, bundle, profile, and state
-- `profiles/`: sample target profiles
-- `catalog/packages/`: package definitions and payload sources
-- `store/blobs/`: content-addressed blob store
-- `dist/`: exported bundle archives
-- `runtime/`: sample runtime target roots and state files
+- `ofpm/`: Python package code and CLI entrypoint
+- `local/repos.json`: repo registration config
+- `local/sources.json`: registered local source paths
+- `repos/main/catalog/packages/`: installable package definitions
+- `repos/main/catalog/providers/apt/`: downloaded apt snapshot metadata
+- `repos/main/artifacts/ofpm/`: repo-internal package payloads
+- `repos/main/artifacts/providers/apt/`: downloaded apt `.deb` payloads and provider metadata
+- `repos/main/profiles/`: target profiles
+- `repos/main/schemas/`: schema drafts
 
 ## Core Concepts
 
-- `package`: desired file layout for one installable unit
-- `full bundle`: complete install/update payload for a package version
-- `patch bundle`: delta from one package version to another
-- `profile`: target machine family metadata such as `ubuntu-22.04` or `rocky-9`
-- `state`: recorded applied bundle and resulting tracked files for one target root
+- `source`: a local builder-side path registered with `ofpm source add`
+- `provider snapshot`: downloaded metadata and payload set from an external provider such as `apt`
+- `repo`: a portable directory tree that can be copied to another machine
+- `package`: an installable unit defined under `catalog/packages/`
+- `state`: recorded installed package state under the managed root
+- `receipt`: uninstall-oriented install record
+- `ownership`: future basis for shared dependency tracking
 
 ## Quick Start
 
-Use the local wrapper directly:
+Initialize the local scaffold:
 
 ```bash
-./bin/ofpm list --verbose
+python3 -m ofpm init
 ```
 
-Optional shell alias:
+Show registered repos:
 
 ```bash
-alias ofpm='/mnt/d/OneDrive/0project/ofpm/bin/ofpm'
+python3 -m ofpm repo list
 ```
 
-Show configured artifact roots:
+Install a non-`pip` launcher:
 
 ```bash
-./bin/ofpm sources
+python3 -m ofpm install-cli /tmp/ofpm
+/tmp/ofpm --help
 ```
 
-Initialize working directories:
+List available packages from registered repos:
 
 ```bash
-./bin/ofpm init
-```
-
-List available packages from the local catalog:
-
-```bash
-./bin/ofpm list --verbose
+python3 -m ofpm list --verbose
 ```
 
 Show package details:
 
 ```bash
-./bin/ofpm show ollama-runtime --files
+python3 -m ofpm show ollama-runtime --files
 ```
 
 Show installed state:
 
 ```bash
-./bin/ofpm state
+python3 -m ofpm state
+python3 -m ofpm state --all-roots
+python3 -m ofpm list --installed --all-roots
 ```
 
-Install `node-runtime` into a test managed root:
+## Local Source Workflow
+
+Register a local source directory:
 
 ```bash
-./bin/ofpm install node-runtime --root-path /tmp/ofpm-user-root
-./bin/ofpm state --root-path /tmp/ofpm-user-root
-./bin/ofpm verify node-runtime --root-path /tmp/ofpm-user-root
+python3 -m ofpm source add pi-tests /mnt/d/OneDrive/0project/harness/pi
+python3 -m ofpm source show pi-tests
+python3 -m ofpm source verify pi-tests
 ```
 
-Remove it again:
+Import that source into the main repo as a package:
 
 ```bash
-./bin/ofpm remove node-runtime --root-path /tmp/ofpm-user-root
+python3 -m ofpm repo import main \
+  --source pi-tests \
+  --package pi-tests \
+  --version 1.0.0 \
+  --profile ubuntu-22.04
 ```
 
-Show the PATH setup needed to prefer `ofpm`-managed tools:
+That command copies the source into `repos/main/artifacts/ofpm/...` and writes a package manifest under `repos/main/catalog/packages/...`.
+
+## Apt Workflow
+
+Inspect the host apt view:
 
 ```bash
-./bin/ofpm env --root user
-eval "$(./bin/ofpm env --root user --export)"
+python3 -m ofpm apt show zstd
+python3 -m ofpm apt list zstd
 ```
 
-Create an offline bundle directory from selected packages:
+Download an apt snapshot into the repo:
 
 ```bash
-./bin/ofpm export pi-stack \
-  --package node-runtime \
-  --package ollama-runtime \
-  --package ollama-model-gemma4-e4b \
-  --package pi-agent \
-  --format dir
+python3 -m ofpm apt download zstd
+python3 -m ofpm apt show zstd --downloaded
 ```
 
-Create an offline bundle archive:
+Turn that snapshot into a repo package definition:
 
 ```bash
-./bin/ofpm export pi-stack \
-  --package node-runtime \
-  --package ollama-runtime \
-  --package ollama-model-gemma4-e4b \
-  --package pi-agent \
-  --format tar.gz
+python3 -m ofpm apt import main zstd
 ```
 
-Show an online acquisition plan for an apt package:
+## Target Usage
+
+Copy `repos/main` to the target machine, then register it:
 
 ```bash
-./bin/ofpm fetch apt curl --distro ubuntu --release 22.04 --arch amd64 --with-deps
+ofpm repo add main /opt/ofpm/repos/main --scope user
 ```
 
-Verify an installed package against recorded state:
+Then use it like a normal offline package source:
 
 ```bash
-./bin/ofpm verify pi-agent --target-root "$HOME/.ofpm"
+ofpm list
+ofpm show node-runtime
+ofpm install node-runtime
 ```
 
-Run a deeper source artifact check:
+## Managed Root State
+
+Managed installs keep JSON state under:
+
+```text
+$HOME/.ofpm/state/
+  installed/
+  receipts/
+  ownership/
+  history.json
+```
+
+Show shell environment setup for managed tools:
 
 ```bash
-./bin/ofpm verify-source pi-agent
+python3 -m ofpm env --root user
+eval "$(python3 -m ofpm env --root user --export)"
 ```
 
-Build a full bundle:
+Show a package-specific shell snippet or modulefile text:
 
 ```bash
-./bin/ofpm pack-full \
-  --package catalog/packages/ollama-runtime/0.23.2/package.json
+python3 -m ofpm env package pi-agent --root user
+python3 -m ofpm env package pi-agent --root user --format modulefile
 ```
 
-Build a patch bundle:
+If the same package is installed in both roots, `remove` and `verify` require an explicit root:
 
 ```bash
-# requires two real versions of the same package lineage
-# example to be refreshed when the first non-demo upgrade pair is added
+python3 -m ofpm remove node-runtime --root user
+sudo python3 -m ofpm remove node-runtime --root system
 ```
 
-Apply a bundle to a target root:
+## Notes
 
-```bash
-./bin/ofpm apply \
-  --bundle dist/ollama-runtime-0.23.2-full.tar.gz \
-  --target-root runtime/targets/example-root \
-  --state runtime/state/example-root.json
-```
-
-Verify recorded state:
-
-```bash
-./bin/ofpm verify-state \
-  --target-root runtime/targets/example-root \
-  --state runtime/state/example-root.json
-```
-
-If the target root is on a filesystem that does not preserve POSIX modes reliably
-(for example a Windows-mounted path under WSL), use default hash-only verification.
-Use `--strict-modes` only on targets where file mode preservation is meaningful.
-
-## Design Notes
-
-- Bundle archives embed `bundle.json` plus only the blobs required for that bundle.
-- The local `store/blobs/` directory acts as the long-lived CAS store for source ingestion.
-- `apply` verifies bundle blob hashes before writing target files.
-- `verify-state` verifies current target contents against recorded state.
-- If a machine drifts too far from a known base version, a full bundle should be used instead of a patch.
-
-## Near-Term Extensions
-
-- multi-package bundle composition
-- explicit prerequisites and upgrade graph rules
-- conda env snapshots and windows installer handlers
-- model/blob validators like manifest-to-blob closure checks for Ollama-style assets
-- signed manifests and stronger provenance metadata
+- target-side commands are intended to remain offline-only
+- builder-side commands such as `source`, `repo import`, and `apt download` prepare repo content
+- `env` prints general managed-root setup; `env package` prints package-specific additions
+- phase-1 install execution is real for the current built-in package types (`node-runtime`, `ollama-runtime`, `pi-agent`, `ollama-model-*`)
+- generic imported package definitions already participate in `list`, `show`, and source verification, even where full install handlers are still evolving

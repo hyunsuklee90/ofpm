@@ -11,3 +11,4 @@ runtime/
 incoming/
 
 local/artifact-roots.json
+tests/work/

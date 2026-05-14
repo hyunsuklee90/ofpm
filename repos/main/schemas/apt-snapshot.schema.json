@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ofpm/apt-snapshot.schema.json",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "provider",
+    "package_name",
+    "package_version",
+    "requested_package",
+    "context",
+    "artifact_root",
+    "packages"
+  ],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "provider": {"const": "apt"},
+    "package_name": {"type": "string"},
+    "package_version": {"type": "string"},
+    "requested_package": {"type": "string"},
+    "with_deps": {"type": "boolean"},
+    "downloaded_at": {"type": "string"},
+    "artifact_root": {"type": "string"},
+    "context": {
+      "type": "object",
+      "required": ["distro", "release", "arch"],
+      "properties": {
+        "distro": {"type": "string"},
+        "release": {"type": "string"},
+        "arch": {"type": "string"}
+      }
+    },
+    "apt_metadata": {"type": "object"},
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "filename", "path", "size"],
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": "string"},
+          "filename": {"type": "string"},
+          "path": {"type": "string"},
+          "size": {"type": "integer"}
+        }
+      }
+    }
+  }
+}

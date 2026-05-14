@@ -1,0 +1,71 @@
+{
+  "schema_version": "1",
+  "package_id": "pi-agent",
+  "version": "0.74.0",
+  "profile_id": "ubuntu-22.04",
+  "install_root": "payloads/pi-agent/0.74.0",
+  "depends": [
+    {
+      "package_id": "node-runtime",
+      "version": "24.13.1",
+      "required": true,
+      "reason": "pi-agent is distributed as a Node-based CLI"
+    },
+    {
+      "package_id": "ollama-runtime",
+      "version": "0.23.2",
+      "required": false,
+      "reason": "needed when pi-agent should talk to a local Ollama runtime"
+    },
+    {
+      "package_id": "ollama-model-gemma4-e4b",
+      "version": "1.0.0",
+      "required": false,
+      "reason": "needed when the local Ollama runtime should serve gemma4:e4b"
+    },
+    {
+      "package_id": "ollama-model-gemma2-2b",
+      "version": "1.0.0",
+      "required": false,
+      "reason": "needed when the local Ollama runtime should serve gemma2:2b"
+    }
+  ],
+  "metadata": {
+    "description": "offline pi tgz, npm cache, and helper binaries stored inside repos/main",
+    "source_kind": "repo-internal",
+    "origin_relroot": "artifacts/ofpm/pi-agent/0.74.0"
+  },
+  "env": {
+    "set": {
+      "PI_CODING_AGENT_DIR": "@config_dir"
+    },
+    "prepend_path": {
+      "PATH": [
+        "@package_root/bin"
+      ]
+    }
+  },
+  "files": [
+    {
+      "source": "../../../../artifacts/ofpm/pi-agent/0.74.0/archives/earendil-works-pi-coding-agent-0.74.0.tgz",
+      "target": "archives/earendil-works-pi-coding-agent-0.74.0.tgz",
+      "mode": "0644"
+    },
+    {
+      "source": "../../../../artifacts/ofpm/pi-agent/0.74.0/bin/rg",
+      "target": "bin/rg",
+      "mode": "0755"
+    },
+    {
+      "source": "../../../../artifacts/ofpm/pi-agent/0.74.0/bin/fd",
+      "target": "bin/fd",
+      "mode": "0755"
+    },
+    {
+      "source_dir": "../../../../artifacts/ofpm/pi-agent/0.74.0/npm-cache",
+      "target_dir": "npm-cache",
+      "file_count_hint": 1004,
+      "mode": "0644"
+    }
+  ]
+}

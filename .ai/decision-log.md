@@ -41,9 +41,22 @@
 ### Network Direction
 
 - Target-side package management should default to offline-strict behavior
-- Builder-side artifact acquisition should be represented as separate `fetch ...` commands
-- First planned online acquisition command family: `fetch apt`
-- Preferred offline transfer workflow: `export` selected packages into bundle dir or archive
+- Builder-side artifact acquisition should be represented as separate provider wrapper commands
+- First implemented online acquisition command family: `apt list`, `apt show`, `apt download`
+- Preferred offline transfer workflow: prepare a portable repo snapshot and copy the repo directory
+- Local builder-side directories should be registered with `source add` and imported with `repo import`
+
+### State Direction
+
+- Phase 1 keeps tool-owned managed-root state in JSON
+- Do not use hand-edited YAML for install/remove tracking
+- Split managed-root state into:
+  - `installed`
+  - `receipts`
+  - `ownership`
+  - `history`
+- `remove` behavior should be receipt-driven
+- Shared dependency handling for external providers such as `apt` should later build on `ownership` entries rather than ad hoc package deletion
 
 ### Dependency Model
 

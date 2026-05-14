@@ -9,15 +9,14 @@
 
 ## Product Direction
 
-- This project is not only a bundle exporter.
 - The target direction is a personal offline package manager, similar in spirit to a private offline `apt`/`yum`.
 - Split the system conceptually into:
   - target-side offline package management
   - builder-side online artifact acquisition
+- Treat the main offline transfer unit as a portable repo snapshot, not a bundle archive.
 - The system must carry:
   - package metadata
-  - available bundle metadata
-  - patch metadata
+  - available repo metadata
   - target state metadata
   - verification rules
 
@@ -46,6 +45,11 @@
 ## Preferred Command Set
 
 - Preferred phase-1 command family:
+  - `ofpm source add <name> <path>`
+  - `ofpm source show <name>`
+  - `ofpm repo import <repo> --source <name> --package <package>`
+  - `ofpm apt download <package>`
+  - `ofpm apt import <repo> <package>`
   - `ofpm list`
   - `ofpm show <package>`
   - `ofpm install <package>`
@@ -53,17 +57,16 @@
   - `ofpm remove <package>`
   - `ofpm verify <package>`
   - `ofpm state`
-  - `ofpm export <bundle-name> --package <package> ...`
 - Treat these as the primary UX targets when evolving existing scaffold commands.
 - For package detail inspection, prefer `show` over `info`.
 
 ## Scope Priorities
 
 1. metadata structure
-2. target state structure
-3. artifact and blob store structure
-4. full bundle export/import
-5. simple patch export/import
+2. source and repo import structure
+3. target state structure
+4. artifact and blob store structure
+5. full repo copy/import flow
 6. target profiles and install layouts
 7. dependency checks and later package-manager style install/upgrade flows
 
@@ -111,7 +114,7 @@
   - layout/root requirements
   - conflicts
 - Avoid file-level dependency modeling in phase 1.
-- If dependency or state checks fail, prefer full bundle fallback over forcing patch apply.
+- If dependency or state checks fail, prefer a conservative full reinstall path over forcing a partial update.
 
 ## Verification Policy
 
@@ -129,14 +132,28 @@
 - Keep package-manager-owned content under the project-managed roots.
 - Separate deployable payloads from validation/test harness assets.
 - Docker offline test assets should be treated as verification scenarios, not ordinary deployed payloads.
+- Users should not need to hand-edit repo internal directories in normal flows.
+- The CLI should manage repo layout details such as `catalog/` and `artifacts/`.
 
 ## Network Policy
 
 - Distinguish target-side commands from builder-side fetch commands.
 - Target-side commands such as `install`, `upgrade`, `remove`, and `verify` should behave as offline-only operations.
-- Builder-side acquisition commands such as `fetch apt` are allowed to be online by design, but their outputs must later be usable without network access.
-- Offline transfer should prefer `ofpm export` generated bundle directories or archives over manual file copying.
+- Builder-side acquisition commands such as `apt download` are allowed to be online by design, but their outputs must later be usable without network access.
+- Offline transfer should prefer copying a prepared `repos/<name>` directory over bundle-specific workflows.
 - When `ofpm` behavior differs because of offline constraints, surface that explicitly in command output.
+
+## State Policy
+
+- Use tool-owned JSON state for phase 1 rather than hand-edited YAML.
+- Keep managed-root state split into:
+  - installed package state
+  - install receipts
+  - ownership entries
+  - install/remove history
+- `ofpm remove` must be driven by recorded receipts, not by best-effort path guessing.
+- For external providers such as `apt`, record enough ownership information to avoid removing shared dependencies that are still referenced by another install.
+- If removal safety is ambiguous, prefer conservative behavior over aggressive deletion.
 
 ## Catalog Policy
 
@@ -150,7 +167,9 @@
 ## Next Implementation Intent
 
 - Keep scaffold concepts aligned with `ofpm`.
+- Keep `source` for local builder-side paths and `apt` for provider-side acquisition.
+- Keep `repo import` as the main way to turn builder-side inputs into portable repo packages.
 - Add explicit layout metadata for system root vs user root.
 - Add catalog/index concepts for installable package discovery.
-- Add dependency fields to package and bundle metadata.
+- Add dependency fields to package metadata.
 - Import selected assets from `/mnt/d/OneDrive/0project/harness/pi` incrementally.

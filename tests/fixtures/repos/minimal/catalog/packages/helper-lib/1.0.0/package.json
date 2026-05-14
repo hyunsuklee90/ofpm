@@ -1,0 +1,18 @@
+{
+  "schema_version": "1",
+  "package_id": "helper-lib",
+  "version": "1.0.0",
+  "profile_id": "ubuntu-22.04",
+  "install_root": "payloads/helper-lib/1.0.0",
+  "depends": [],
+  "metadata": {
+    "description": "tiny dependency payload"
+  },
+  "files": [
+    {
+      "source_dir": "../../../../artifacts/ofpm/helper-lib/1.0.0/payload",
+      "target_dir": "",
+      "mode": "0644"
+    }
+  ]
+}
