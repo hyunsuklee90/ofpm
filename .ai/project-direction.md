@@ -62,7 +62,7 @@ The CLI should own repo structure details:
 
 - local source registration under `local/`
 - package definitions under `repos/<name>/catalog/packages/`
-- provider snapshots under `repos/<name>/catalog/providers/`
+- provider snapshots under `repos/<name>/catalog/<provider>/`
 - payloads under `repos/<name>/artifacts/`
 
 The copied repo directory is the offline delivery unit.

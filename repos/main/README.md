@@ -5,9 +5,9 @@ Portable self-contained `ofpm` repo snapshot.
 Contents:
 
 - `catalog/packages/`
-- `catalog/providers/apt/`
+- `catalog/apt/`
 - `artifacts/ofpm/`
-- `artifacts/providers/apt/`
+- `artifacts/apt/`
 - `profiles/`
 - `schemas/`
 

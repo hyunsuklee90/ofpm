@@ -481,9 +481,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     for rel in [
         "local",
         "repos/main/catalog/packages",
-        "repos/main/catalog/providers/apt",
+        "repos/main/catalog/apt",
         "repos/main/artifacts/ofpm",
-        "repos/main/artifacts/providers/apt",
+        "repos/main/artifacts/apt",
         "repos/main/profiles",
         "repos/main/schemas",
     ]:
@@ -1501,7 +1501,7 @@ def cmd_apt_import(args: argparse.Namespace) -> int:
         print(f"package manifest already exists: {manifest_path}")
         return 1
     description = args.description or snapshot.get("apt_metadata", {}).get("Description-en") or snapshot.get("apt_metadata", {}).get("Description") or f"apt snapshot for {args.package}"
-    install_root = args.install_root or f"providers/apt/{package_id}/{version}"
+    install_root = args.install_root or f"apt/{package_id}/{version}"
     package_manifest = build_apt_package_manifest(
         repo_path,
         provider_manifest_path,

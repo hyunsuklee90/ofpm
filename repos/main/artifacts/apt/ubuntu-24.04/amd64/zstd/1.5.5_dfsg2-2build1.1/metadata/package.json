@@ -1,17 +1,4 @@
 {
-  "schema_version": "1",
-  "provider": "apt",
-  "package_name": "zstd",
-  "package_version": "1.5.5+dfsg2-2build1.1",
-  "requested_package": "zstd",
-  "with_deps": false,
-  "downloaded_at": "2026-05-12T14:01:31+00:00",
-  "artifact_root": "repos/main/artifacts/providers/apt/ubuntu-24.04/amd64/zstd/1.5.5_dfsg2-2build1.1",
-  "context": {
-    "arch": "amd64",
-    "distro": "ubuntu",
-    "release": "24.04"
-  },
   "apt_metadata": {
     "Architecture": "amd64",
     "Bugs": "https://bugs.launchpad.net/ubuntu/+filebug",
@@ -37,13 +24,26 @@
     "Task": "ubuntu-desktop-minimal, ubuntu-desktop, ubuntu-live, cloud-image, cloud-image, server, ubuntu-server-raspi, kubuntu-desktop, kubuntu-full, kubuntu-live, xubuntu-minimal, xubuntu-desktop, xubuntu-live, lubuntu-desktop, lubuntu-live, ubuntustudio-desktop, ubuntustudio-dvd-live, ubuntukylin-desktop, ubuntukylin-desktop, ubuntukylin-live, ubuntukylin-desktop-minimal, ubuntu-mate-core, ubuntu-mate-desktop, ubuntu-mate-live, ubuntu-budgie-desktop-minimal, ubuntu-budgie-desktop, ubuntu-budgie-live, ubuntu-budgie-desktop-raspi, ubuntu-unity-desktop, ubuntu-unity-live, edubuntu-desktop-gnome-minimal, edubuntu-desktop-gnome, edubuntu-dvd-live, edubuntu-desktop-gnome-raspi, edubuntu-live, ubuntucinnamon-desktop-minimal, ubuntucinnamon-desktop, ubuntucinnamon-desktop, ubuntucinnamon-live, ubuntucinnamon-desktop-raspi",
     "Version": "1.5.5+dfsg2-2build1.1"
   },
+  "artifact_root": "/mnt/d/OneDrive/0project/ofpm/artifacts/apt/ubuntu-24.04/amd64/zstd/1.5.5_dfsg2-2build1.1",
+  "context": {
+    "arch": "amd64",
+    "distro": "ubuntu",
+    "release": "24.04"
+  },
+  "downloaded_at": "2026-05-12T14:01:31+00:00",
+  "package_name": "zstd",
+  "package_version": "1.5.5+dfsg2-2build1.1",
   "packages": [
     {
       "filename": "zstd_1.5.5+dfsg2-2build1.1_amd64.deb",
       "name": "zstd",
-      "path": "repos/main/artifacts/providers/apt/ubuntu-24.04/amd64/zstd/1.5.5_dfsg2-2build1.1/pool/zstd_1.5.5+dfsg2-2build1.1_amd64.deb",
+      "path": "/mnt/d/OneDrive/0project/ofpm/artifacts/apt/ubuntu-24.04/amd64/zstd/1.5.5_dfsg2-2build1.1/pool/zstd_1.5.5+dfsg2-2build1.1_amd64.deb",
       "size": 644020,
       "version": "1.5.5+dfsg2-2build1.1"
     }
-  ]
+  ],
+  "provider": "apt",
+  "requested_package": "zstd",
+  "schema_version": "1",
+  "with_deps": false
 }

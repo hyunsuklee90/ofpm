@@ -45,7 +45,7 @@ def detect_apt_context() -> dict[str, str]:
 
 
 def apt_catalog_root(repo_root: Path) -> Path:
-    return repo_root / "catalog" / "providers" / "apt"
+    return repo_root / "catalog" / "apt"
 
 
 def apt_package_manifest_path(repo_root: Path, package_name: str, version: str) -> Path:
@@ -63,7 +63,6 @@ def apt_artifact_root(
     return (
         repo_root
         / "artifacts"
-        / "providers"
         / "apt"
         / f"{distro}-{release}"
         / arch

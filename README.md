@@ -45,9 +45,9 @@ If you omit the output path, `ofpm` creates `./ofpm` in the current directory wh
 - `local/repos.json`: repo registration config
 - `local/sources.json`: registered local source paths
 - `repos/main/catalog/packages/`: installable package definitions
-- `repos/main/catalog/providers/apt/`: downloaded apt snapshot metadata
+- `repos/main/catalog/apt/`: downloaded apt snapshot metadata
 - `repos/main/artifacts/ofpm/`: repo-internal package payloads
-- `repos/main/artifacts/providers/apt/`: downloaded apt `.deb` payloads and provider metadata
+- `repos/main/artifacts/apt/`: downloaded apt `.deb` payloads and provider metadata
 - `repos/main/profiles/`: target profiles
 - `repos/main/schemas/`: schema drafts
 
