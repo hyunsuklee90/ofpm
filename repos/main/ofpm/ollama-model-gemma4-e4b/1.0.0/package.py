@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+
+def package():
+    return {
+        "schema_version": "1",
+        "package_id": "ollama-model-gemma4-e4b",
+        "version": "1.0.0",
+        "target": {
+            "os": "linux",
+            "distro": "ubuntu",
+            "release": "22.04",
+            "arch": "amd64",
+        },
+        "install_root": "payloads/ollama-model-gemma4-e4b/1.0.0",
+        "depends": [
+            {
+                "package_id": "ollama-runtime",
+                "version": "0.23.2",
+                "required": False,
+                "reason": "usable later when an Ollama runtime is installed and pointed at the managed model store",
+            }
+        ],
+        "metadata": {
+            "description": "offline gemma4:e4b ollama manifest/blob backup stored inside repos/main",
+            "source_kind": "repo-internal",
+            "origin_relroot": "packages/ollama-model-gemma4-e4b/1.0.0/payload/models-backup-e4b",
+            "pi_model": {
+                "provider": "ollama",
+                "id": "gemma4:e4b",
+                "name": "Gemma 4 E4B Local",
+            },
+            "verification_notes": [
+                "manifest closure must be verified before restore",
+                "list-only checks are insufficient",
+            ],
+        },
+        "env": {
+            "set": {
+                "OLLAMA_MODELS": "@managed_root/data/ollama-models"
+            }
+        },
+        "files": [
+            {
+                "source_dir": "payload/models-backup-e4b",
+                "target_dir": "models-backup-e4b",
+                "mode": "0644",
+            }
+        ],
+    }

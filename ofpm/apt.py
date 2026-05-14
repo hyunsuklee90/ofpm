@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from ofpm.package_def import load_package_file
+
 
 def safe_path_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-") or "item"
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def read_os_release(path: Path = Path("/etc/os-release")) -> dict[str, str]:
@@ -45,11 +42,11 @@ def detect_apt_context() -> dict[str, str]:
 
 
 def apt_catalog_root(repo_root: Path) -> Path:
-    return repo_root / "catalog" / "apt"
+    return repo_root / "apt"
 
 
 def apt_package_manifest_path(repo_root: Path, package_name: str, version: str) -> Path:
-    return apt_catalog_root(repo_root) / package_name / safe_path_component(version) / "package.json"
+    return apt_catalog_root(repo_root) / package_name / safe_path_component(version) / "package.py"
 
 
 def apt_artifact_root(
@@ -60,18 +57,13 @@ def apt_artifact_root(
     package_name: str,
     version: str,
 ) -> Path:
-    return (
-        repo_root
-        / "artifacts"
-        / "apt"
-        / f"{distro}-{release}"
-        / arch
-        / package_name
-        / safe_path_component(version)
-    )
+    return apt_catalog_root(repo_root) / package_name / safe_path_component(version) / "payload"
 
 
 def apt_package_manifests(repo_root: Path) -> list[Path]:
+    results = sorted(apt_catalog_root(repo_root).glob("*/*/package.py"))
+    if results:
+        return results
     return sorted(apt_catalog_root(repo_root).glob("*/*/package.json"))
 
 
@@ -83,23 +75,23 @@ def find_apt_package_manifest(
     matches = [
         manifest_path
         for manifest_path in apt_package_manifests(repo_root)
-        if load_json(manifest_path).get("package_name") == package_name
+        if load_package_file(manifest_path).get("package_name") == package_name
     ]
     if not matches:
         return None
     if version is not None:
         for manifest_path in matches:
-            data = load_json(manifest_path)
+            data = load_package_file(manifest_path)
             if data.get("package_version") == version:
                 return manifest_path
         return None
-    return sorted(matches, key=lambda path: load_json(path).get("package_version", ""))[-1]
+    return sorted(matches, key=lambda path: load_package_file(path).get("package_version", ""))[-1]
 
 
 def list_apt_packages(repo_root: Path) -> list[dict[str, Any]]:
     packages: list[dict[str, Any]] = []
     for manifest_path in apt_package_manifests(repo_root):
-        data = load_json(manifest_path)
+        data = load_package_file(manifest_path)
         packages.append(
             {
                 "package_name": data["package_name"],

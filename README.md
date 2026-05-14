@@ -44,19 +44,17 @@ If you omit the output path, `ofpm` creates `./ofpm` in the current directory wh
 - `ofpm/`: Python package code and CLI entrypoint
 - `local/repos.json`: repo registration config
 - `local/sources.json`: registered local source paths
-- `repos/main/catalog/packages/`: installable package definitions
-- `repos/main/catalog/apt/`: downloaded apt snapshot metadata
-- `repos/main/artifacts/ofpm/`: repo-internal package payloads
-- `repos/main/artifacts/apt/`: downloaded apt `.deb` payloads and provider metadata
-- `repos/main/profiles/`: target profiles
-- `repos/main/schemas/`: schema drafts
+- `repos/main/ofpm/<package>/<version>/package.py`: native ofpm package definition
+- `repos/main/ofpm/<package>/<version>/payload/`: native ofpm package payload
+- `repos/main/apt/<package>/<version>/package.py`: downloaded apt snapshot definition
+- `repos/main/apt/<package>/<version>/payload/`: downloaded apt `.deb` payloads and provider metadata
 
 ## Core Concepts
 
 - `source`: a local builder-side path registered with `ofpm source add`
 - `provider snapshot`: downloaded metadata and payload set from an external provider such as `apt`
 - `repo`: a portable directory tree that can be copied to another machine
-- `package`: an installable unit defined under `catalog/packages/`
+- `package`: an installable unit defined by `package.py` plus `payload/`
 - `state`: recorded installed package state under the managed root
 - `receipt`: uninstall-oriented install record
 - `ownership`: future basis for shared dependency tracking
@@ -122,7 +120,7 @@ python3 -m ofpm repo import main \
   --profile ubuntu-22.04
 ```
 
-That command copies the source into `repos/main/artifacts/ofpm/...` and writes a package manifest under `repos/main/catalog/packages/...`.
+That command copies the source into `repos/main/ofpm/<package>/<version>/payload/` and writes `package.py` beside it.
 
 ## Apt Workflow
 

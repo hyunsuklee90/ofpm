@@ -6,4 +6,4 @@
 
 The minimal repo is intentionally tiny. It is used to validate install/remove,
 dependency checks, env rendering, and root-selection policy without depending on
-large real payloads under `repos/main/artifacts/`.
+large real payloads under `repos/main`.

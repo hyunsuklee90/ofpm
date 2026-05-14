@@ -4,12 +4,10 @@ Portable self-contained `ofpm` repo snapshot.
 
 Contents:
 
-- `catalog/packages/`
-- `catalog/apt/`
-- `artifacts/ofpm/`
-- `artifacts/apt/`
-- `profiles/`
-- `schemas/`
+- `ofpm/<package>/<version>/package.py`
+- `ofpm/<package>/<version>/payload/`
+- `apt/<package>/<version>/package.py`
+- `apt/<package>/<version>/payload/`
 
 Typical target-side registration flow:
 

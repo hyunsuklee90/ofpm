@@ -170,6 +170,61 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertNotIn("hello-tool 1.0.0", listed_again.stdout)
 
+    def test_source_add_and_repo_import_emit_package_py_layout(self) -> None:
+        with self.make_tempdir("ofpm-cli-import-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            rootfs = scenario_root / "rootfs"
+            repo_path = scenario_root / "repo"
+            source_path = scenario_root / "source-hello"
+            env = self.scenario_env(scenario_root)
+            managed_root = rootfs / "home" / "tester" / ".ofpm"
+
+            (source_path / "bin").mkdir(parents=True, exist_ok=True)
+            (source_path / "bin" / "hello-import").write_text(
+                "#!/usr/bin/env bash\necho hello-import\n",
+                encoding="utf-8",
+            )
+
+            repo_path.mkdir(parents=True, exist_ok=True)
+            self.run_cli("repo", "add", "importtest", str(repo_path), "--scope", "user", env=env)
+            self.run_cli("source", "add", "hello-import", str(source_path), env=env)
+
+            imported = self.run_cli(
+                "repo",
+                "import",
+                "importtest",
+                "--source",
+                "hello-import",
+                "--package",
+                "hello-import",
+                "--version",
+                "1.0.0",
+                env=env,
+            )
+            self.assertIn("imported source into repo: hello-import", imported.stdout)
+
+            manifest_path = repo_path / "ofpm" / "hello-import" / "1.0.0" / "package.py"
+            payload_path = repo_path / "ofpm" / "hello-import" / "1.0.0" / "payload" / "bin" / "hello-import"
+            self.assertTrue(manifest_path.exists())
+            self.assertTrue(payload_path.exists())
+
+            package_data = cli.load_package_file(manifest_path)
+            self.assertIn("target", package_data)
+            self.assertEqual(package_data["target"]["distro"], "ubuntu")
+            self.assertEqual(package_data["profile_id"], "ubuntu-22.04")
+
+            listed = self.run_cli("list", "--all", env=env)
+            self.assertIn("hello-import 1.0.0", listed.stdout)
+
+            installed = self.run_cli(
+                "install",
+                "hello-import",
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertIn("installed package: hello-import 1.0.0", installed.stdout)
+
     def test_dependency_and_ambiguous_root_policy(self) -> None:
         with self.make_tempdir("ofpm-cli-policy-") as temp_dir:
             scenario_root = Path(temp_dir)

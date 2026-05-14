@@ -20,6 +20,7 @@ from ofpm.apt import (
     find_apt_package_manifest,
     list_apt_packages,
 )
+from ofpm.package_def import dump_package_file, load_package_file
 from ofpm.core import (
     dump_json,
     find_installed_state,
@@ -221,6 +222,16 @@ def resolve_repo_data_path(repo_path: Path, raw_path: str) -> Path:
     return project_candidate
 
 
+def build_target_from_profile(profile_id: str) -> dict[str, str]:
+    distro, _, release = profile_id.partition("-")
+    return {
+        "os": "linux",
+        "distro": distro or "generic",
+        "release": release or "",
+        "arch": "amd64",
+    }
+
+
 def build_source_package_manifest(
     source_name: str,
     source_path: Path,
@@ -263,7 +274,7 @@ def build_source_package_manifest(
         "schema_version": "1",
         "package_id": package_id,
         "version": version,
-        "profile_id": profile_id,
+        "target": build_target_from_profile(profile_id),
         "install_root": install_root,
         "depends": [],
         "metadata": metadata,
@@ -283,17 +294,16 @@ def import_local_source_package(
     description: str,
 ) -> tuple[Path, Path]:
     source_path = Path(source_record["path"]).expanduser().resolve()
-    manifest_root = repo_path / "catalog" / "packages" / package_id / version
-    manifest_path = manifest_root / "package.json"
-    artifact_root = repo_path / "artifacts" / "ofpm" / package_id / version
+    manifest_root = repo_path / "ofpm" / package_id / version
+    manifest_path = manifest_root / "package.py"
+    artifact_root = manifest_root / "payload"
     if manifest_path.exists():
         raise ValueError(f"package manifest already exists: {manifest_path}")
     if artifact_root.exists():
-        raise ValueError(f"package artifact root already exists: {artifact_root}")
+        raise ValueError(f"package payload root already exists: {artifact_root}")
 
-    artifact_root.parent.mkdir(parents=True, exist_ok=True)
     if source_record["kind"] == "dir":
-        shutil.copytree(source_path, artifact_root / "payload", dirs_exist_ok=False)
+        shutil.copytree(source_path, artifact_root, dirs_exist_ok=False)
     else:
         artifact_root.mkdir(parents=True, exist_ok=False)
         shutil.copy2(source_path, artifact_root / source_path.name)
@@ -309,7 +319,7 @@ def import_local_source_package(
         install_root=install_root,
         description=description,
     )
-    dump_json(manifest_path, manifest)
+    dump_package_file(manifest_path, manifest)
     return manifest_path, artifact_root
 
 
@@ -323,14 +333,14 @@ def build_apt_package_manifest(
     install_root: str,
     description: str,
 ) -> dict[str, Any]:
-    manifest_root = repo_path / "catalog" / "packages" / package_id / snapshot["package_version"]
+    manifest_root = repo_path / "ofpm" / package_id / snapshot["package_version"]
     artifact_root = resolve_repo_data_path(repo_path, snapshot["artifact_root"])
     files: list[dict[str, Any]] = []
-    metadata_package_path = artifact_root / "metadata" / "package.json"
+    metadata_package_path = artifact_root / "metadata" / "package.py"
     files.append(
         {
             "source": relpath_posix(metadata_package_path, manifest_root),
-            "target": "metadata/package.json",
+            "target": "metadata/package.py",
             "mode": "0644",
         }
     )
@@ -347,7 +357,7 @@ def build_apt_package_manifest(
         "schema_version": "1",
         "package_id": package_id,
         "version": snapshot["package_version"],
-        "profile_id": profile_id,
+        "target": build_target_from_profile(profile_id),
         "install_root": install_root,
         "depends": [],
         "metadata": {
@@ -369,10 +379,10 @@ def available_packages_with_repo() -> list[dict[str, object]]:
     packages: list[dict[str, object]] = []
     for repo_id, repo_path_raw in sorted(repos.items()):
         repo_path = Path(repo_path_raw).expanduser().resolve()
-        catalog_root = repo_path / "catalog"
-        if not catalog_root.exists():
+        package_base = repo_path if (repo_path / "ofpm").exists() else repo_path / "catalog"
+        if not package_base.exists():
             continue
-        for item in list_available_packages(catalog_root, artifact_roots):
+        for item in list_available_packages(package_base, artifact_roots):
             package = dict(item)
             package["repo_id"] = repo_id
             package["repo_path"] = str(repo_path)
@@ -393,7 +403,13 @@ def package_manifests_with_repo() -> list[dict[str, str]]:
     manifests: list[dict[str, str]] = []
     for repo_id, repo_path_raw in sorted(repos.items()):
         repo_path = Path(repo_path_raw).expanduser().resolve()
-        for manifest_path in sorted((repo_path / "catalog" / "packages").glob("*/*/package.json")):
+        package_root = repo_path / "ofpm"
+        if not package_root.exists():
+            package_root = repo_path / "catalog" / "packages"
+        candidates = sorted(package_root.glob("*/*/package.py"))
+        if not candidates:
+            candidates = sorted(package_root.glob("*/*/package.json"))
+        for manifest_path in candidates:
             manifests.append(
                 {
                     "repo_id": repo_id,
@@ -408,7 +424,7 @@ def find_registered_package_manifest(package_id: str, version: str | None = None
     matches: list[dict[str, str]] = []
     for entry in package_manifests_with_repo():
         manifest_path = Path(entry["manifest"])
-        data = load_json(manifest_path)
+        data = load_package_file(manifest_path)
         if data["package_id"] != package_id:
             continue
         if version is not None and data["version"] != version:
@@ -480,12 +496,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     root = repo_root()
     for rel in [
         "local",
-        "repos/main/catalog/packages",
-        "repos/main/catalog/apt",
-        "repos/main/artifacts/ofpm",
-        "repos/main/artifacts/apt",
-        "repos/main/profiles",
-        "repos/main/schemas",
+        "repos/main/ofpm",
+        "repos/main/apt",
     ]:
         (root / rel).mkdir(parents=True, exist_ok=True)
     print(f"initialized scaffold under {root}")
@@ -681,7 +693,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     manifest_path = Path(manifest_entry["manifest"])
     package = package_summary_from_manifest(manifest_path, artifact_roots=artifact_roots)
     managed = effective_managed_root(args)
-    package_data = load_json(manifest_path)
+    package_data = load_package_file(manifest_path)
     if package["package_id"] == "node-runtime":
         state = install_node_runtime(
             managed,
@@ -1297,7 +1309,7 @@ def cmd_repo_import(args: argparse.Namespace) -> int:
     print(f" - profile: {profile_id}")
     print(f" - install root: {install_root}")
     print(f" - source path: {source_path}")
-    print(f" - artifact root: {artifact_root}")
+    print(f" - payload root: {artifact_root}")
     print(f" - manifest: {manifest_path}")
     return 0
 
@@ -1338,7 +1350,7 @@ def cmd_apt_list(args: argparse.Namespace) -> int:
             )
             if args.verbose:
                 print(f"   repo path: {package['repo_path']}")
-                print(f"   artifact root: {package['artifact_root']}")
+                print(f"   payload root: {package['artifact_root']}")
                 print(f"   manifest: {package['manifest']}")
         return 0
 
@@ -1371,7 +1383,7 @@ def cmd_apt_show(args: argparse.Namespace) -> int:
         if manifest_path is None:
             print(f"apt package snapshot not found: {args.package}")
             return 1
-        data = load_json(manifest_path)
+        data = load_package_file(manifest_path)
         if args.json:
             print_json(data)
             return 0
@@ -1385,7 +1397,7 @@ def cmd_apt_show(args: argparse.Namespace) -> int:
         print(f" - include dependencies: {'yes' if data.get('with_deps') else 'no'}")
         print(f" - repo: {repo_id}")
         print(f" - repo path: {repo_path}")
-        print(f" - artifact root: {data['artifact_root']}")
+        print(f" - payload root: {data['artifact_root']}")
         print(f" - manifest: {manifest_path}")
         print(f" - downloaded packages: {len(data.get('packages', []))}")
         for package in data.get("packages", []):
@@ -1465,8 +1477,8 @@ def cmd_apt_download(args: argparse.Namespace) -> int:
         "apt_metadata": apt_show_metadata(requested_package, requested_version),
     }
     manifest_path = apt_package_manifest_path(root, requested_package, requested_version)
-    dump_json(manifest_path, summary)
-    dump_json(metadata_dir / "package.json", summary)
+    dump_package_file(manifest_path, summary)
+    dump_package_file(metadata_dir / "package.py", summary)
 
     print(f"downloaded apt package snapshot: {requested_package}")
     print(f" - version: {requested_version}")
@@ -1475,7 +1487,7 @@ def cmd_apt_download(args: argparse.Namespace) -> int:
     print(f" - arch: {context['arch']}")
     print(f" - include dependencies: {'yes' if args.with_deps else 'no'}")
     print(f" - repo path: {root}")
-    print(f" - artifact root: {artifact_root}")
+    print(f" - payload root: {artifact_root}")
     print(f" - manifest: {manifest_path}")
     print(f" - package files: {len(downloaded_packages)}")
     return 0
@@ -1493,10 +1505,10 @@ def cmd_apt_import(args: argparse.Namespace) -> int:
         print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
         print("hint: run `ofpm apt download <package>` first")
         return 1
-    snapshot = load_json(provider_manifest_path)
+    snapshot = load_package_file(provider_manifest_path)
     package_id = (args.package_id or args.package).strip().lower()
     version = snapshot["package_version"]
-    manifest_path = repo_path / "catalog" / "packages" / package_id / version / "package.json"
+    manifest_path = repo_path / "ofpm" / package_id / version / "package.py"
     if manifest_path.exists():
         print(f"package manifest already exists: {manifest_path}")
         return 1
@@ -1511,7 +1523,7 @@ def cmd_apt_import(args: argparse.Namespace) -> int:
         install_root=install_root,
         description=description,
     )
-    dump_json(manifest_path, package_manifest)
+    dump_package_file(manifest_path, package_manifest)
     print(f"imported apt snapshot into repo: {args.package}")
     print(f" - repo: {repo_id}")
     print(f" - repo path: {repo_path}")

@@ -23,6 +23,7 @@ from ofpm.apt import (
     find_apt_package_manifest,
     list_apt_packages,
 )
+from ofpm.package_def import load_package_file
 from ofpm.state_db import (
     managed_installed_state_root,
     managed_receipt_file,
@@ -91,7 +92,11 @@ def save_repos_config(path: Path, repos: dict[str, str]) -> None:
 
 
 def repo_package_manifests(catalog_root: Path) -> list[Path]:
-    return sorted(catalog_root.glob("packages/*/*/package.json"))
+    package_dir = catalog_root / "ofpm"
+    results = sorted(package_dir.glob("*/*/package.py"))
+    if results:
+        return results
+    return sorted(package_dir.glob("*/*/package.json"))
 
 
 def list_available_packages(catalog_root: Path, artifact_roots: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -265,7 +270,7 @@ def package_summary_from_manifest(
     include_files: bool = False,
     artifact_roots: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    data = load_json(manifest_path)
+    data = load_package_file(manifest_path)
     files: list[dict[str, Any]] = []
     missing_sources: list[str] = []
     file_count = 0
@@ -313,7 +318,7 @@ def verify_package_sources(
     *,
     artifact_roots: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    data = load_json(manifest_path)
+    data = load_package_file(manifest_path)
     declared_paths = collect_declared_source_paths(
         data,
         manifest_path,
@@ -342,17 +347,17 @@ def find_package_manifest(catalog_root: Path, package_id: str, version: str | No
     matches = [
         manifest_path
         for manifest_path in repo_package_manifests(catalog_root)
-        if load_json(manifest_path)["package_id"] == package_id
+        if load_package_file(manifest_path)["package_id"] == package_id
     ]
     if not matches:
         return None
     if version is not None:
         for manifest_path in matches:
-            data = load_json(manifest_path)
+            data = load_package_file(manifest_path)
             if data["version"] == version:
                 return manifest_path
         return None
-    return sorted(matches, key=lambda path: load_json(path)["version"])[-1]
+    return sorted(matches, key=lambda path: load_package_file(path)["version"])[-1]
 
 
 def installed_states(state_root: Path) -> list[dict[str, Any]]:
