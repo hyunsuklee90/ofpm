@@ -11,4 +11,9 @@ runtime/
 incoming/
 
 local/artifact-roots.json
+local/*.json
 tests/work/
+
+# Large repo-managed payloads are intentionally not committed.
+repos/main/ofpm/*/*/payload/
+repos/main/apt/*/*/payload/
