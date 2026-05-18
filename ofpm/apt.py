@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import gzip
+import os
+import pwd
 import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from ofpm.package_def import load_package_file
+from ofpm.process_ui import run_command_live, run_task_live
 
 
 def safe_path_component(value: str) -> str:
@@ -58,6 +62,33 @@ def apt_artifact_root(
     version: str,
 ) -> Path:
     return apt_catalog_root(repo_root) / package_name / safe_path_component(version) / "payload"
+
+
+def apt_snapshot_artifact_root(provider_manifest_path: Path, snapshot: dict[str, Any]) -> Path:
+    package_local_payload = provider_manifest_path.parent / "payload"
+    if package_local_payload.exists():
+        return package_local_payload
+    artifact_root = snapshot.get("artifact_root")
+    if artifact_root:
+        return Path(str(artifact_root)).expanduser().resolve()
+    raise ValueError(f"unable to resolve apt artifact root for {provider_manifest_path}")
+
+
+def resolve_built_apt_local_repo_root(
+    provider_manifest_path: Path,
+    snapshot: dict[str, Any],
+) -> Path:
+    artifact_root = apt_snapshot_artifact_root(provider_manifest_path, snapshot)
+    packages_path = artifact_root / "Packages"
+    packages_gz_path = artifact_root / "Packages.gz"
+    pool_dir = artifact_root / "pool"
+    if not pool_dir.exists():
+        raise ValueError(f"apt snapshot pool directory not found: {pool_dir}")
+    if not packages_path.exists() or not packages_gz_path.exists():
+        raise ValueError(
+            "apt local repo metadata not found; run `ofpm apt build-repo <repo> <package>` on the builder first"
+        )
+    return artifact_root
 
 
 def apt_package_manifests(repo_root: Path) -> list[Path]:
@@ -190,12 +221,10 @@ def apt_dependency_names(package_name: str) -> list[str]:
 def apt_download_package(output_dir: Path, package_name: str, version: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     before = {path.name for path in output_dir.glob("*.deb")}
-    subprocess.run(
+    run_command_live(
         ["apt-get", "download", f"{package_name}={version}"],
-        check=True,
         cwd=output_dir,
-        capture_output=True,
-        text=True,
+        label=f"apt download {package_name}",
     )
     after = list(output_dir.glob("*.deb"))
     created = [path for path in after if path.name not in before]
@@ -205,3 +234,78 @@ def apt_download_package(output_dir: Path, package_name: str, version: str) -> P
     if len(matches) == 1:
         return matches[0]
     raise ValueError(f"unable to determine downloaded .deb for {package_name}={version}")
+
+
+def build_apt_local_repo(
+    provider_manifest_path: Path,
+    snapshot: dict[str, Any],
+) -> Path:
+    artifact_root = apt_snapshot_artifact_root(provider_manifest_path, snapshot)
+    pool_dir = artifact_root / "pool"
+    if not pool_dir.exists():
+        raise ValueError(f"apt snapshot pool directory not found: {pool_dir}")
+
+    try:
+        scan = run_command_live(
+            ["dpkg-scanpackages", "pool", "/dev/null"],
+            cwd=artifact_root,
+            label=f"scan apt repo {snapshot['package_name']}",
+            merge_stderr=False,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError("missing required builder tool: dpkg-scanpackages") from exc
+
+    packages_text = scan.stdout
+    packages_path = artifact_root / "Packages"
+    packages_gz_path = artifact_root / "Packages.gz"
+
+    def write_packages() -> None:
+        packages_path.write_text(packages_text, encoding="utf-8")
+
+    def write_packages_gz() -> None:
+        with gzip.open(packages_gz_path, "wt", encoding="utf-8") as handle:
+            handle.write(packages_text)
+
+    run_task_live(
+        f"write apt Packages {snapshot['package_name']}",
+        write_packages,
+        status=str(packages_path),
+    )
+    run_task_live(
+        f"write apt Packages.gz {snapshot['package_name']}",
+        write_packages_gz,
+        status=str(packages_gz_path),
+    )
+    return artifact_root
+
+
+def apt_source_line(local_repo_root: Path) -> str:
+    return f"deb [trusted=yes] file:{local_repo_root.resolve().as_posix()} ./"
+
+
+def apt_repo_access_issue(local_repo_root: Path, sandbox_user: str = "_apt") -> str | None:
+    try:
+        pw = pwd.getpwnam(sandbox_user)
+    except KeyError:
+        return None
+
+    uid = pw.pw_uid
+    gids = {pw.pw_gid}
+
+    resolved = local_repo_root.resolve()
+    paths = list(resolved.parents)[::-1] + [resolved]
+    for path in paths:
+        stat = path.stat()
+        mode = stat.st_mode
+        if stat.st_uid == uid:
+            allowed = bool(mode & 0o100)
+        elif stat.st_gid in gids:
+            allowed = bool(mode & 0o010)
+        else:
+            allowed = bool(mode & 0o001)
+        if not allowed:
+            return (
+                f"apt sandbox user `{sandbox_user}` cannot access repo path: {path} "
+                f"(fix permissions or move the repo under a world-traversable path)"
+            )
+    return None

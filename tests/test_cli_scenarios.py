@@ -225,6 +225,66 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertIn("installed package: hello-import 1.0.0", installed.stdout)
 
+    def test_package_init_verify_test_and_repo_import_package(self) -> None:
+        with self.make_tempdir("ofpm-cli-package-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            rootfs = scenario_root / "rootfs"
+            repo_path = scenario_root / "repo"
+            package_root = scenario_root / "builder" / "packaging" / "ofpm"
+            env = self.scenario_env(scenario_root)
+            managed_root = rootfs / "home" / "tester" / ".ofpm"
+
+            repo_path.mkdir(parents=True, exist_ok=True)
+            self.run_cli("repo", "add", "pkgtest", str(repo_path), "--scope", "user", env=env)
+
+            initialized = self.run_cli(
+                "package",
+                "init",
+                str(package_root),
+                "--package-id",
+                "cds",
+                "--version",
+                "0.1.0",
+                "--description",
+                "portable cds fixture",
+                env=env,
+            )
+            self.assertIn("initialized package dir", initialized.stdout)
+
+            payload_bin = package_root / "payload" / "bin"
+            payload_bin.mkdir(parents=True, exist_ok=True)
+            script_path = payload_bin / "cds"
+            script_path.write_text("#!/usr/bin/env bash\necho cds-fixture\n", encoding="utf-8")
+
+            verified = self.run_cli("package", "verify", str(package_root), env=env)
+            self.assertIn(" - result: verified", verified.stdout)
+
+            tested = self.run_cli("package", "test", str(package_root), env=env)
+            self.assertIn(" - result: passed", tested.stdout)
+
+            imported = self.run_cli(
+                "repo",
+                "import-package",
+                "pkgtest",
+                str(package_root),
+                env=env,
+            )
+            self.assertIn("imported package dir into repo: cds", imported.stdout)
+
+            manifest_path = repo_path / "ofpm" / "cds" / "0.1.0" / "package.py"
+            payload_path = repo_path / "ofpm" / "cds" / "0.1.0" / "payload" / "bin" / "cds"
+            self.assertTrue(manifest_path.exists())
+            self.assertTrue(payload_path.exists())
+
+            installed = self.run_cli(
+                "install",
+                "cds",
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertIn("installed package: cds 0.1.0", installed.stdout)
+
     def test_dependency_and_ambiguous_root_policy(self) -> None:
         with self.make_tempdir("ofpm-cli-policy-") as temp_dir:
             scenario_root = Path(temp_dir)
@@ -291,20 +351,128 @@ class CliScenarioTests(unittest.TestCase):
             system_root = temp_root / "system-root"
             write_installed_state(
                 user_root,
-                package_id="node-runtime",
+                package_id="node",
                 version="24.13.1",
                 updated_at="2026-05-14T00:00:00+00:00",
                 root_kind="user",
             )
             write_installed_state(
                 system_root,
-                package_id="node-runtime",
+                package_id="node",
                 version="24.13.1",
                 updated_at="2026-05-14T00:00:01+00:00",
                 root_kind="system",
             )
-            self.assertTrue(managed_state_file(user_root, "node-runtime").exists())
-            self.assertTrue(managed_state_file(system_root, "node-runtime").exists())
+            self.assertTrue(managed_state_file(user_root, "node").exists())
+            self.assertTrue(managed_state_file(system_root, "node").exists())
+
+    def test_apt_build_repo_and_activate_flow(self) -> None:
+        with self.make_tempdir("ofpm-cli-apt-local-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            repo_path = scenario_root / "repo"
+            package_root = repo_path / "apt" / "zstd" / "1.0.0"
+            payload_root = package_root / "payload"
+            pool_dir = payload_root / "pool"
+            pool_dir.mkdir(parents=True, exist_ok=True)
+            (pool_dir / "zstd_1.0.0_amd64.deb").write_bytes(b"fake-deb")
+
+            cli.dump_package_file(
+                package_root / "package.py",
+                {
+                    "schema_version": "1",
+                    "provider": "apt",
+                    "package_name": "zstd",
+                    "package_version": "1.0.0",
+                    "requested_package": "zstd",
+                    "with_deps": True,
+                    "context": {"distro": "ubuntu", "release": "22.04", "arch": "amd64"},
+                    "downloaded_at": "2026-05-18T00:00:00+00:00",
+                    "artifact_root": str(payload_root),
+                    "packages": [
+                        {
+                            "name": "zstd",
+                            "version": "1.0.0",
+                            "filename": "zstd_1.0.0_amd64.deb",
+                            "path": str(pool_dir / "zstd_1.0.0_amd64.deb"),
+                            "size": 8,
+                        }
+                    ],
+                    "apt_metadata": {"Package": "zstd", "Version": "1.0.0"},
+                },
+            )
+
+            source_path = scenario_root / "zstd.list"
+            args_build = argparse.Namespace(repo_id="main", package="zstd", version=None)
+            args_activate = argparse.Namespace(
+                repo_id="main",
+                package="zstd",
+                version=None,
+                source_name=None,
+                source_path=str(source_path),
+                no_update=False,
+            )
+            args_deactivate = argparse.Namespace(
+                package="zstd",
+                source_name=None,
+                source_path=str(source_path),
+                no_update=True,
+            )
+
+            def fake_run(cmd, **kwargs):
+                if cmd[:2] == ["dpkg-scanpackages", "pool"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="Package: zstd\nVersion: 1.0.0\n\n", stderr="")
+                if cmd[0] == "apt-get":
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {cmd}")
+
+            with mock.patch("ofpm.cli.resolve_registered_repo_path", return_value=repo_path):
+                with mock.patch("subprocess.run", side_effect=fake_run):
+                    build_out = io.StringIO()
+                    with contextlib.redirect_stdout(build_out):
+                        result = cli.cmd_apt_build_repo(args_build)
+                    self.assertEqual(result, 0)
+                    self.assertIn("built apt local repo: zstd", build_out.getvalue())
+                    self.assertTrue((payload_root / "Packages").exists())
+                    self.assertTrue((payload_root / "Packages.gz").exists())
+
+                    activate_out = io.StringIO()
+                    with contextlib.redirect_stdout(activate_out):
+                        result = cli.cmd_apt_activate(args_activate)
+                    self.assertEqual(result, 0)
+                    self.assertIn("activated apt local repo: zstd", activate_out.getvalue())
+                    self.assertTrue(source_path.exists())
+                    self.assertIn("deb [trusted=yes] file:", source_path.read_text(encoding="utf-8"))
+
+                    deactivate_out = io.StringIO()
+                    with contextlib.redirect_stdout(deactivate_out):
+                        result = cli.cmd_apt_deactivate(args_deactivate)
+                    self.assertEqual(result, 0)
+                    self.assertFalse(source_path.exists())
+
+    def test_dnf_repo_file_text(self) -> None:
+        repo_text = cli.dnf_repo_file_text("offline-main", Path("/tmp/offline-main"))
+        self.assertIn("[offline-main]", repo_text)
+        self.assertIn("baseurl=file:///tmp/offline-main", repo_text)
+        self.assertIn("enabled=1", repo_text)
+
+    def test_apt_commands_helper_output(self) -> None:
+        args = argparse.Namespace(
+            repo_id="main",
+            package="zstd",
+            version=None,
+            with_deps=True,
+            source_name=None,
+        )
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            result = cli.cmd_apt_commands(args)
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("apt helper for: zstd", output)
+        self.assertIn("ofpm apt download zstd --with-deps", output)
+        self.assertIn("ofpm apt build-repo main zstd", output)
+        self.assertIn("sudo ofpm apt activate main zstd --source-name ofpm-zstd", output)
+        self.assertIn("dpkg -s zstd >/dev/null 2>&1 || sudo apt install zstd", output)
 
 
 if __name__ == "__main__":

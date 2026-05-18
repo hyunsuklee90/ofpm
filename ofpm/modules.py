@@ -31,9 +31,9 @@ def package_env_spec(state: dict[str, Any]) -> dict[str, Any]:
         return env_spec
 
     package_id = package["package_id"]
-    if package_id == "node-runtime":
+    if package_id in {"node", "node-runtime"}:
         return {"prepend_path": {"PATH": ["@package_root/bin"]}}
-    if package_id == "ollama-runtime":
+    if package_id in {"ollama", "ollama-runtime"}:
         return {
             "prepend_path": {
                 "PATH": ["@package_root/bin"],

@@ -16,8 +16,8 @@ The intended flow is:
 ## Design Principles
 
 - repo snapshot first, bundle workflow later if ever needed
-- content kept under repo-managed `catalog/` and `artifacts/`
-- target-aware management by profile and install root kind
+- content kept under repo-managed package directories using `package.py` and `payload/`
+- target-aware management by install root kind and target metadata
 - recorded target state for install, verify, and later upgrade decisions
 - command and output conventions kept close to mainstream package manager UX
 
@@ -56,13 +56,13 @@ Phase-1 state split:
 
 ## Repo Model
 
-Users should not need to hand-edit `catalog/` and `artifacts/` in normal flows.
+Users should not need to hand-edit repo internals in normal flows.
 
 The CLI should own repo structure details:
 
 - local source registration under `local/`
-- package definitions under `repos/<name>/catalog/packages/`
-- provider snapshots under `repos/<name>/catalog/<provider>/`
-- payloads under `repos/<name>/artifacts/`
+- native packages under `repos/<name>/ofpm/<package>/<version>/`
+- provider snapshots under `repos/<name>/<provider>/<package>/<version>/`
+- payload content under each package-local `payload/`
 
 The copied repo directory is the offline delivery unit.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -10,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from ofpm.apt import (
+    apt_repo_access_issue,
     apt_artifact_root,
+    apt_source_line,
+    build_apt_local_repo,
     apt_dependency_names,
     apt_download_package,
     apt_package_manifest_path,
@@ -19,16 +23,32 @@ from ofpm.apt import (
     detect_apt_context,
     find_apt_package_manifest,
     list_apt_packages,
+    resolve_built_apt_local_repo_root,
+    safe_path_component,
 )
 from ofpm.package_def import dump_package_file, load_package_file
+from ofpm.dnf import build_dnf_local_repo, dnf_repo_file_text
+from ofpm.process_ui import run_command_live
 from ofpm.core import (
+    sync_managed_state_db,
+    verify_state,
+)
+from ofpm.installers import (
+    install_package_from_definition,
+    remove_package_from_definition,
+    verify_package_from_definition,
+)
+from ofpm.local_package import (
+    import_local_package,
+    scaffold_managed_files_package,
+    test_local_package,
+    verify_local_package,
+)
+from ofpm.modules import render_package_modulefile, render_package_shell_env
+from ofpm.plugins import attach_plugin, detach_plugin, list_attached_plugins, refresh_plugins
+from ofpm.repo_data import (
     dump_json,
     find_installed_state,
-    install_node_runtime,
-    install_managed_files_package,
-    install_ollama_model_bundle,
-    install_ollama_runtime,
-    install_pi_agent,
     installed_states,
     list_available_packages,
     load_artifact_roots,
@@ -36,21 +56,12 @@ from ofpm.core import (
     managed_state_root,
     package_summary_from_manifest,
     repo_repos_config_path,
-    remove_managed_payload,
-    remove_node_runtime,
     registered_repos,
     save_repos_config,
-    sync_managed_state_db,
     user_repos_config_path,
     verify_package_sources,
-    verify_node_runtime_install,
-    verify_ollama_model_install,
-    verify_ollama_runtime_install,
-    verify_pi_agent_install,
-    verify_managed_files_install,
-    verify_state,
 )
-from ofpm.modules import render_package_modulefile, render_package_shell_env
+from ofpm.runtime_support import remove_managed_payload, verify_managed_files_install
 from ofpm.state_db import (
     list_ownership_entries,
     list_receipts,
@@ -123,8 +134,20 @@ def installed_states_for_query(args: argparse.Namespace) -> list[dict[str, Any]]
     return combined
 
 
+def equivalent_package_ids(package_id: str) -> list[str]:
+    normalized = package_id.strip().lower()
+    aliases = {
+        "node": ["node-runtime"],
+        "node-runtime": ["node"],
+        "ollama": ["ollama-runtime"],
+        "ollama-runtime": ["ollama"],
+    }
+    return [normalized, *aliases.get(normalized, [])]
+
+
 def resolve_installed_state_for_action(args: argparse.Namespace, package_id: str) -> tuple[Path, dict[str, Any]] | None:
-    matches = [item for item in installed_states_for_query(args) if item["package_id"] == package_id]
+    allowed_ids = set(equivalent_package_ids(package_id))
+    matches = [item for item in installed_states_for_query(args) if item["package_id"] in allowed_ids]
     if not matches:
         return None
     if len(matches) == 1:
@@ -144,9 +167,11 @@ def resolve_installed_state_for_action(args: argparse.Namespace, package_id: str
 
 
 def any_installed_state(package_id: str) -> bool:
+    allowed_ids = set(equivalent_package_ids(package_id))
     for root_kind in ["user", "system"]:
-        if find_installed_state(managed_state_root(managed_root(root_kind)), package_id) is not None:
-            return True
+        for current_id in allowed_ids:
+            if find_installed_state(managed_state_root(managed_root(root_kind)), current_id) is not None:
+                return True
     return False
 
 
@@ -277,6 +302,8 @@ def build_source_package_manifest(
         "target": build_target_from_profile(profile_id),
         "install_root": install_root,
         "depends": [],
+        "plugins": [],
+        "plugin_data": [],
         "metadata": metadata,
         "files": files,
     }
@@ -360,6 +387,8 @@ def build_apt_package_manifest(
         "target": build_target_from_profile(profile_id),
         "install_root": install_root,
         "depends": [],
+        "plugins": [],
+        "plugin_data": [],
         "metadata": {
             "description": description,
             "source_kind": "provider-apt",
@@ -422,10 +451,11 @@ def package_manifests_with_repo() -> list[dict[str, str]]:
 
 def find_registered_package_manifest(package_id: str, version: str | None = None) -> dict[str, str] | None:
     matches: list[dict[str, str]] = []
+    allowed_ids = set(equivalent_package_ids(package_id))
     for entry in package_manifests_with_repo():
         manifest_path = Path(entry["manifest"])
         data = load_package_file(manifest_path)
-        if data["package_id"] != package_id:
+        if data["package_id"] not in allowed_ids:
             continue
         if version is not None and data["version"] != version:
             continue
@@ -622,10 +652,25 @@ def cmd_show(args: argparse.Namespace) -> int:
         print("dependencies:")
         for dep in package["depends"]:
             dep_version = dep.get("version", "*")
-            dep_required = "required" if dep.get("required", True) else "optional"
-            line = f" - {dep['package_id']} {dep_version} [{dep_required}]"
+            line = f" - {dep['package_id']} {dep_version}"
             if dep.get("reason"):
                 line += f" {dep['reason']}"
+            print(line)
+    if package.get("plugins"):
+        print("plugins:")
+        for plugin in package["plugins"]:
+            plugin_version = plugin.get("version", "*")
+            line = f" - {plugin['package_id']} {plugin_version}"
+            if plugin.get("reason"):
+                line += f" {plugin['reason']}"
+            print(line)
+    if package.get("plugin_data"):
+        print("plugin data:")
+        for item in package["plugin_data"]:
+            selector = item.get("package_id_prefix") or item.get("package_id") or item.get("kind", "*")
+            line = f" - {selector}"
+            if item.get("reason"):
+                line += f" {item['reason']}"
             print(line)
     if installed:
         print("installed: yes")
@@ -683,6 +728,114 @@ def cmd_verify_source(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_package_verify(args: argparse.Namespace) -> int:
+    try:
+        result = verify_local_package(args.path)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(f"verify package dir: {result['package_root']}")
+    print(f" - package: {result['package_id']}")
+    print(f" - version: {result['version']}")
+    print(f" - manifest: {result['manifest']}")
+    print(f" - install root: {result['install_root']}")
+    print(f" - declared source paths: {result['declared_source_count']}")
+    print(f" - expanded files: {result['expanded_file_count']}")
+    if result["availability_error"]:
+        print(f" - availability error: {result['availability_error']}")
+    if result["missing_sources"]:
+        print(f" - missing source paths: {len(result['missing_sources'])}")
+        for path in result["missing_sources"][:20]:
+            print(f"   {path}")
+    if result["missing_files"]:
+        print(f" - missing expanded files: {len(result['missing_files'])}")
+        for path in result["missing_files"][:20]:
+            print(f"   {path}")
+    if result["ok"]:
+        print(" - result: verified")
+        return 0
+    print(" - result: failed")
+    return 1
+
+
+def cmd_package_test(args: argparse.Namespace) -> int:
+    try:
+        result = test_local_package(args.path, root_kind=args.root)
+    except (FileExistsError, ValueError) as exc:
+        print(str(exc))
+        return 1
+    print(f"test package dir: {Path(args.path).expanduser().resolve()}")
+    print(f" - package: {result['package_id']}")
+    print(f" - version: {result['version']}")
+    print(f" - manifest: {result['manifest']}")
+    print(f" - managed root: {result['managed_root']}")
+    print(f" - current path: {result['current_path']}")
+    print(f" - tracked files: {result['tracked_files']}")
+    if result["verify_errors"]:
+        print(" - verify result: failed")
+        for error in result["verify_errors"]:
+            print(f"   {error}")
+        return 1
+    print(" - verify result: verified")
+    print(f" - remove result: {'removed' if result['removed'] else 'not-removed'}")
+    print(" - result: passed")
+    return 0
+
+
+def cmd_package_init(args: argparse.Namespace) -> int:
+    try:
+        package_root = scaffold_managed_files_package(
+            args.path,
+            package_id=args.package_id,
+            version=args.version,
+            profile_id=args.profile,
+            install_root=args.install_root,
+            description=args.description or "",
+            force=args.force,
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(f"initialized package dir: {package_root}")
+    print(f" - package: {args.package_id}")
+    print(f" - version: {args.version}")
+    print(f" - manifest: {package_root / 'package.py'}")
+    print(f" - payload root: {package_root / 'payload'}")
+    return 0
+
+
+def cmd_repo_import_package(args: argparse.Namespace) -> int:
+    repo_id = args.repo_id.strip().lower()
+    try:
+        repo_path = resolve_registered_repo_path(repo_id)
+        check = verify_local_package(args.path)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    if not check["ok"]:
+        print(f"package verification failed: {args.path}")
+        print("run `ofpm package verify <path>` and fix the package before import")
+        return 1
+    try:
+        package, dest_root = import_local_package(
+            repo_path,
+            args.path,
+            replace=args.replace,
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(f"imported package dir into repo: {package.package_data['package_id']}")
+    print(f" - repo: {repo_id}")
+    print(f" - repo path: {repo_path}")
+    print(f" - package root: {package.package_root}")
+    print(f" - package: {package.package_data['package_id']}")
+    print(f" - version: {package.package_data['version']}")
+    print(f" - manifest: {dest_root / package.manifest_path.name}")
+    print(f" - payload root: {dest_root / 'payload'}")
+    return 0
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     require_offline_target_mode("install")
     artifact_roots = effective_artifact_roots()
@@ -694,62 +847,6 @@ def cmd_install(args: argparse.Namespace) -> int:
     package = package_summary_from_manifest(manifest_path, artifact_roots=artifact_roots)
     managed = effective_managed_root(args)
     package_data = load_package_file(manifest_path)
-    if package["package_id"] == "node-runtime":
-        state = install_node_runtime(
-            managed,
-            manifest_path,
-            package_data,
-            root_kind=args.root,
-            artifact_roots=artifact_roots,
-        )
-        print(f"installed package: {package['package_id']} {package['version']}")
-        print(f" - managed root: {managed}")
-        print(f" - current path: {state['package']['current_path']}")
-        print(f" - state file: {managed_state_root(managed) / (package['package_id'] + '.json')}")
-        return 0
-    if package["package_id"] == "ollama-runtime":
-        state = install_ollama_runtime(
-            managed,
-            manifest_path,
-            package_data,
-            root_kind=args.root,
-            artifact_roots=artifact_roots,
-        )
-        print(f"installed package: {package['package_id']} {package['version']}")
-        print(f" - managed root: {managed}")
-        print(f" - current path: {state['package']['current_path']}")
-        print(f" - library dir: {state['package']['library_dir']}")
-        print(f" - install mode: {state['package']['install_mode']}")
-        print(f" - state file: {managed_state_root(managed) / (package['package_id'] + '.json')}")
-        return 0
-    if package["package_id"] == "pi-agent":
-        state = install_pi_agent(
-            managed,
-            manifest_path,
-            package_data,
-            root_kind=args.root,
-            artifact_roots=artifact_roots,
-        )
-        print(f"installed package: {package['package_id']} {package['version']}")
-        print(f" - managed root: {managed}")
-        print(f" - current path: {state['package']['current_path']}")
-        print(f" - config dir: {state['package']['config_dir']}")
-        print(f" - state file: {managed_state_root(managed) / (package['package_id'] + '.json')}")
-        return 0
-    if package["package_id"].startswith("ollama-model-"):
-        state = install_ollama_model_bundle(
-            managed,
-            manifest_path,
-            package_data,
-            root_kind=args.root,
-            artifact_roots=artifact_roots,
-        )
-        print(f"installed package: {package['package_id']} {package['version']}")
-        print(f" - managed root: {managed}")
-        print(f" - current path: {state['package']['current_path']}")
-        print(f" - models path: {state['package']['models_path']}")
-        print(f" - state file: {managed_state_root(managed) / (package['package_id'] + '.json')}")
-        return 0
     print(f"install plan for {package['package_id']} {package['version']}")
     print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
     print(f" - managed root: {managed}")
@@ -757,17 +854,156 @@ def cmd_install(args: argparse.Namespace) -> int:
     print(f" - check target profile compatibility: expected {package['profile_id']}")
     print(f" - install root policy: {package['install_root']}")
     print(f" - package file count: {package['file_count']}")
-    state = install_managed_files_package(
-        managed,
-        manifest_path,
-        package_data,
-        root_kind=args.root,
-        artifact_roots=artifact_roots,
-    )
+    try:
+        state = install_package_from_definition(
+            managed,
+            manifest_path,
+            package_data,
+            root_kind=args.root,
+            artifact_roots=artifact_roots,
+        )
+    except FileExistsError as exc:
+        installed = find_installed_state(managed_state_root(managed), package["package_id"])
+        print(f"install failed: {package['package_id']} {package['version']}")
+        print(f" - managed root: {managed}")
+        if installed and installed["package_version"] == package["version"]:
+            print(" - reason: package version is already installed")
+            print(f" - installed state: {installed['state_path']}")
+            print(f" - current version root: {installed['raw']['package'].get('version_root', '<unknown>')}")
+            print(" - next action: use `ofpm verify <package>` or `ofpm remove <package>`")
+            return 1
+        print(" - reason: install path already exists but installed state does not match")
+        print(f" - conflicting path: {exc}")
+        print(" - next action: inspect `ofpm state` and remove stale files before retrying")
+        return 1
     print(f"installed package: {package['package_id']} {package['version']}")
     print(f" - managed root: {managed}")
     print(f" - current path: {state['package']['current_path']}")
-    print(f" - tracked files: {len(state['package']['tracked_files'])}")
+    if "library_dir" in state["package"]:
+        print(f" - library dir: {state['package']['library_dir']}")
+    if "install_mode" in state["package"]:
+        print(f" - install mode: {state['package']['install_mode']}")
+    if "config_dir" in state["package"]:
+        print(f" - config dir: {state['package']['config_dir']}")
+    if "models_path" in state["package"]:
+        print(f" - models path: {state['package']['models_path']}")
+    if "tracked_files" in state["package"]:
+        print(f" - tracked files: {len(state['package']['tracked_files'])}")
+    print(f" - state file: {managed_state_root(managed) / (package['package_id'] + '.json')}")
+    return 0
+
+
+def remove_installed_package(managed: Path, installed: dict[str, Any]) -> dict[str, Any] | None:
+    manifest_entry = find_registered_package_manifest(installed["package_id"], installed["package_version"])
+    if manifest_entry is not None:
+        manifest_path = Path(manifest_entry["manifest"])
+        package_data = load_package_file(manifest_path)
+        result = remove_package_from_definition(
+            managed,
+            manifest_path,
+            package_data,
+            installed,
+            root_kind=installed.get("selected_root_kind", "user"),
+        )
+        if result is not None:
+            return result
+    if installed["raw"].get("install_type") == "managed-install" and installed["raw"]["package"].get("version_root"):
+        return remove_managed_payload(managed, installed)
+    return None
+
+
+def cleanup_stale_install_paths(managed: Path, package_data: dict[str, Any]) -> list[Path]:
+    removed: list[Path] = []
+    package_id = str(package_data["package_id"])
+    version = str(package_data["version"])
+    install_roots = {
+        managed / "payloads" / package_id / version,
+    }
+    if package_id == "node":
+        install_roots.add(managed / "payloads" / "node-runtime" / version)
+    if package_id == "ollama":
+        install_roots.add(managed / "payloads" / "ollama-runtime" / version)
+
+    for version_root in sorted(install_roots):
+        if version_root.exists():
+            shutil.rmtree(version_root)
+            removed.append(version_root)
+        current_link = version_root.parent / "current"
+        if current_link.is_symlink() or current_link.exists():
+            current_target = current_link.resolve() if current_link.is_symlink() else None
+            if current_target is None or current_target == version_root:
+                current_link.unlink()
+    return removed
+
+
+def cmd_reinstall(args: argparse.Namespace) -> int:
+    require_offline_target_mode("reinstall")
+    artifact_roots = effective_artifact_roots()
+    manifest_entry = find_registered_package_manifest(args.package, args.version)
+    if manifest_entry is None:
+        print(f"package not found: {args.package}")
+        return 1
+
+    manifest_path = Path(manifest_entry["manifest"])
+    package = package_summary_from_manifest(manifest_path, artifact_roots=artifact_roots)
+    package_data = load_package_file(manifest_path)
+
+    resolved = resolve_installed_state_for_action(args, args.package)
+    if resolved is not None:
+        managed, installed = resolved
+        print(f"reinstall plan for {package['package_id']} {package['version']}")
+        print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
+        print(f" - managed root: {managed}")
+        print(f" - existing version: {installed['package_version']}")
+        print(f" - existing state: {installed['state_path']}")
+        print(" - action: remove existing install before fresh install")
+        result = remove_installed_package(managed, installed)
+        if result is not None:
+            print(f"removed package: {result['package_id']} {result['package_version']}")
+            print(f" - managed root: {result['managed_root']}")
+            print(f" - removed version root: {result['removed_version_root']}")
+        else:
+            print(f"reinstall failed: could not remove installed package {args.package}")
+            return 1
+    else:
+        if any_installed_state(args.package):
+            return 1
+        managed = effective_managed_root(args)
+        print(f"reinstall plan for {package['package_id']} {package['version']}")
+        print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
+        print(f" - managed root: {managed}")
+        print(" - existing version: not installed")
+        print(" - action: install only")
+        removed_stale = cleanup_stale_install_paths(managed, package_data)
+        if removed_stale:
+            print(f" - stale path cleanup: removed {len(removed_stale)} path(s)")
+            for path in removed_stale:
+                print(f"   {path}")
+
+    print(f" - check catalog manifest: {package['manifest']}")
+    print(f" - check target profile compatibility: expected {package['profile_id']}")
+    print(f" - install root policy: {package['install_root']}")
+    print(f" - package file count: {package['file_count']}")
+    try:
+        state = install_package_from_definition(
+            managed,
+            manifest_path,
+            package_data,
+            root_kind=args.root,
+            artifact_roots=artifact_roots,
+        )
+    except FileExistsError as exc:
+        print(f"reinstall failed: {package['package_id']} {package['version']}")
+        print(f" - managed root: {managed}")
+        print(" - reason: install path still exists after reinstall preparation")
+        print(f" - conflicting path: {exc}")
+        return 1
+
+    print(f"reinstalled package: {package['package_id']} {package['version']}")
+    print(f" - managed root: {managed}")
+    print(f" - current path: {state['package']['current_path']}")
+    if "tracked_files" in state["package"]:
+        print(f" - tracked files: {len(state['package']['tracked_files'])}")
     print(f" - state file: {managed_state_root(managed) / (package['package_id'] + '.json')}")
     return 0
 
@@ -804,20 +1040,8 @@ def cmd_remove(args: argparse.Namespace) -> int:
             print(f"package not installed: {args.package}")
         return 1
     managed, installed = resolved
-    if installed["package_id"] == "node-runtime":
-        result = remove_node_runtime(managed, installed)
-        print(f"removed package: {result['package_id']} {result['package_version']}")
-        print(f" - managed root: {result['managed_root']}")
-        print(f" - removed version root: {result['removed_version_root']}")
-        return 0
-    if installed["package_id"] in {"ollama-runtime", "pi-agent"} or installed["package_id"].startswith("ollama-model-"):
-        result = remove_managed_payload(managed, installed)
-        print(f"removed package: {result['package_id']} {result['package_version']}")
-        print(f" - managed root: {result['managed_root']}")
-        print(f" - removed version root: {result['removed_version_root']}")
-        return 0
-    if installed["raw"].get("install_type") == "managed-install" and installed["raw"]["package"].get("version_root"):
-        result = remove_managed_payload(managed, installed)
+    result = remove_installed_package(managed, installed)
+    if result is not None:
         print(f"removed package: {result['package_id']} {result['package_version']}")
         print(f" - managed root: {result['managed_root']}")
         print(f" - removed version root: {result['removed_version_root']}")
@@ -840,58 +1064,31 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"package not installed: {args.package}")
         return 1
     managed, installed = resolved
-    if installed["package_id"] == "node-runtime":
-        errors = verify_node_runtime_install(installed)
-        print(f"verify package: {args.package}")
-        print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
-        print(f" - managed root: {managed}")
-        print(f" - state file: {installed['state_path']}")
-        if errors:
-            print(" - result: failed")
-            for error in errors:
-                print(f"   {error}")
-            return 1
-        print(" - result: verified")
-        return 0
-    if installed["package_id"] == "ollama-runtime":
-        errors = verify_ollama_runtime_install(installed)
-        print(f"verify package: {args.package}")
-        print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
-        print(f" - managed root: {managed}")
-        print(f" - state file: {installed['state_path']}")
-        if errors:
-            print(" - result: failed")
-            for error in errors:
-                print(f"   {error}")
-            return 1
-        print(" - result: verified")
-        return 0
-    if installed["package_id"] == "pi-agent":
-        errors = verify_pi_agent_install(installed)
-        print(f"verify package: {args.package}")
-        print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
-        print(f" - managed root: {managed}")
-        print(f" - state file: {installed['state_path']}")
-        if errors:
-            print(" - result: failed")
-            for error in errors:
-                print(f"   {error}")
-            return 1
-        print(" - result: verified")
-        return 0
-    if installed["package_id"].startswith("ollama-model-"):
-        errors = verify_ollama_model_install(installed)
-        print(f"verify package: {args.package}")
-        print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
-        print(f" - managed root: {managed}")
-        print(f" - state file: {installed['state_path']}")
-        if errors:
-            print(" - result: failed")
-            for error in errors:
-                print(f"   {error}")
-            return 1
-        print(" - result: verified")
-        return 0
+    manifest_entry = find_registered_package_manifest(installed["package_id"], installed["package_version"])
+    if manifest_entry is not None:
+        manifest_path = Path(manifest_entry["manifest"])
+        package_data = load_package_file(manifest_path)
+        errors = verify_package_from_definition(
+            managed,
+            manifest_path,
+            package_data,
+            installed,
+            root_kind=installed.get("selected_root_kind", "user"),
+            strict_modes=args.strict_modes,
+            target_root=Path(args.target_root).resolve() if args.target_root else None,
+        )
+        if errors is not None:
+            print(f"verify package: {args.package}")
+            print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
+            print(f" - managed root: {managed}")
+            print(f" - state file: {installed['state_path']}")
+            if errors:
+                print(" - result: failed")
+                for error in errors:
+                    print(f"   {error}")
+                return 1
+            print(" - result: verified")
+            return 0
     if installed["raw"].get("install_type") == "managed-install" and installed["raw"]["package"].get("tracked_files"):
         errors = verify_managed_files_install(installed)
         print(f"verify package: {args.package}")
@@ -1007,8 +1204,10 @@ def cmd_env(args: argparse.Namespace) -> int:
     payload_bin_dirs = [
         path
         for path in [
+            root / "payloads" / "node" / "current" / "bin",
             root / "payloads" / "node-runtime" / "current" / "bin",
             root / "payloads" / "pi-agent" / "current" / "bin",
+            root / "payloads" / "ollama" / "current" / "bin",
             root / "payloads" / "ollama-runtime" / "current" / "bin",
         ]
         if path.exists()
@@ -1040,6 +1239,55 @@ def cmd_env(args: argparse.Namespace) -> int:
     print("notes:")
     print(" - this does not modify your shell automatically")
     print(" - edit the snippet before adding it to ~/.bashrc if you want a different PATH order")
+    return 0
+
+
+def cmd_plugin_list(args: argparse.Namespace) -> int:
+    managed = effective_managed_root(args)
+    attached = list_attached_plugins(managed, args.host_package)
+    print(f"plugin host: {args.host_package}")
+    print(f"managed root: {managed}")
+    if not attached:
+        print("attached plugin count: 0")
+        return 0
+    print(f"attached plugin count: {len(attached)}")
+    for item in attached:
+        print(f" - {item['package_id']} {item.get('package_version', '')}".rstrip())
+    return 0
+
+
+def cmd_plugin_attach(args: argparse.Namespace) -> int:
+    managed = effective_managed_root(args)
+    result = attach_plugin(managed, args.host_package, args.plugin_package)
+    refresh_plugins(managed, args.host_package)
+    print(f"attached plugin: {result['plugin_package_id']} {result['plugin_package_version']}")
+    print(f" - host: {result['host_package_id']}")
+    print(f" - managed root: {managed}")
+    return 0
+
+
+def cmd_plugin_detach(args: argparse.Namespace) -> int:
+    managed = effective_managed_root(args)
+    result = detach_plugin(managed, args.host_package, args.plugin_package)
+    refresh_plugins(managed, args.host_package)
+    print(f"detached plugin: {result['plugin_package_id']}")
+    print(f" - host: {result['host_package_id']}")
+    print(f" - removed: {'yes' if result['removed'] else 'no'}")
+    print(f" - managed root: {managed}")
+    return 0
+
+
+def cmd_plugin_refresh(args: argparse.Namespace) -> int:
+    managed = effective_managed_root(args)
+    result = refresh_plugins(managed, args.host_package)
+    print(f"refreshed plugins for managed root: {managed}")
+    if args.host_package:
+        print(f" - host: {args.host_package}")
+    print(f" - refreshed host count: {len(result['refreshed_hosts'])}")
+    for item in result["refreshed_hosts"]:
+        print(f"   {item['package_id']} {item['package_version']}")
+    for note in result["notes"]:
+        print(f" - note: {note}")
     return 0
 
 
@@ -1427,6 +1675,38 @@ def cmd_apt_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_apt_commands(args: argparse.Namespace) -> int:
+    package = args.package.strip()
+    repo_id = args.repo_id.strip().lower()
+    with_deps = bool(args.with_deps)
+    source_name = args.source_name or f"ofpm-{safe_path_component(package)}"
+
+    print(f"apt helper for: {package}")
+    print(f" - repo: {repo_id}")
+    print(f" - include dependencies: {'yes' if with_deps else 'no'}")
+    print("builder-side:")
+    download_cmd = f"ofpm apt download {package}"
+    if args.version:
+        download_cmd += f" --version {args.version}"
+    if with_deps:
+        download_cmd += " --with-deps"
+    print(f"   {download_cmd}")
+    build_cmd = f"ofpm apt build-repo {repo_id} {package}"
+    if args.version:
+        build_cmd += f" --version {args.version}"
+    print(f"   {build_cmd}")
+    print("target-side:")
+    activate_cmd = f"sudo ofpm apt activate {repo_id} {package} --source-name {source_name}"
+    if args.version:
+        activate_cmd += f" --version {args.version}"
+    print(f"   {activate_cmd}")
+    print(f"   dpkg -s {package} >/dev/null 2>&1 || sudo apt install {package}")
+    print("optional cleanup:")
+    print(f"   sudo apt remove {package}")
+    print(f"   sudo ofpm apt deactivate {package} --source-name {source_name}")
+    return 0
+
+
 def cmd_apt_download(args: argparse.Namespace) -> int:
     root = primary_repo_path()
     context = effective_apt_context(args)
@@ -1536,6 +1816,211 @@ def cmd_apt_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def isolated_apt_update(source_path: Path) -> None:
+    run_command_live(
+        [
+            "apt-get",
+            "-o",
+            f"Dir::Etc::sourcelist={source_path}",
+            "-o",
+            "Dir::Etc::sourceparts=-",
+            "-o",
+            "APT::Get::List-Cleanup=0",
+            "update",
+        ],
+        label="apt update",
+    )
+
+
+def cmd_apt_build_repo(args: argparse.Namespace) -> int:
+    repo_id = args.repo_id.strip().lower()
+    try:
+        repo_path = resolve_registered_repo_path(repo_id)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
+    if provider_manifest_path is None:
+        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
+        print("hint: run `ofpm apt download <package>` first")
+        return 1
+    snapshot = load_package_file(provider_manifest_path)
+    try:
+        local_repo_root = build_apt_local_repo(provider_manifest_path, snapshot)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(f"built apt local repo: {args.package}")
+    print(f" - repo: {repo_id}")
+    print(f" - version: {snapshot['package_version']}")
+    print(f" - provider manifest: {provider_manifest_path}")
+    print(f" - local repo root: {local_repo_root}")
+    print(f" - source line: {apt_source_line(local_repo_root)}")
+    return 0
+
+
+def cmd_apt_source_line(args: argparse.Namespace) -> int:
+    repo_id = args.repo_id.strip().lower()
+    try:
+        repo_path = resolve_registered_repo_path(repo_id)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
+    if provider_manifest_path is None:
+        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
+        return 1
+    snapshot = load_package_file(provider_manifest_path)
+    try:
+        local_repo_root = resolve_built_apt_local_repo_root(provider_manifest_path, snapshot)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(apt_source_line(local_repo_root))
+    return 0
+
+
+def cmd_apt_activate(args: argparse.Namespace) -> int:
+    repo_id = args.repo_id.strip().lower()
+    try:
+        repo_path = resolve_registered_repo_path(repo_id)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
+    if provider_manifest_path is None:
+        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
+        return 1
+    snapshot = load_package_file(provider_manifest_path)
+    try:
+        local_repo_root = resolve_built_apt_local_repo_root(provider_manifest_path, snapshot)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+
+    source_name = args.source_name or f"ofpm-{safe_path_component(args.package)}"
+    source_path = Path(args.source_path or f"/etc/apt/sources.list.d/{source_name}.list").resolve()
+    try:
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(apt_source_line(local_repo_root) + "\n", encoding="utf-8")
+    except PermissionError:
+        print(f"permission denied writing apt source file: {source_path}")
+        print("hint: run `sudo ofpm apt activate ...` or use `--source-path` under a writable directory")
+        return 1
+
+    print(f"activated apt local repo: {args.package}")
+    print(f" - repo: {repo_id}")
+    print(f" - provider manifest: {provider_manifest_path}")
+    print(f" - local repo root: {local_repo_root}")
+    print(f" - source file: {source_path}")
+    print(f" - source line: {apt_source_line(local_repo_root)}")
+
+    access_issue = apt_repo_access_issue(local_repo_root)
+    if access_issue:
+        print(f" - apt cache refresh: skipped")
+        print(f" - reason: {access_issue}")
+        print(" - hint: move the repo to a world-traversable path or relax parent-directory execute permissions")
+        return 1
+
+    if not args.no_update:
+        try:
+            isolated_apt_update(source_path)
+        except subprocess.CalledProcessError as exc:
+            print(" - apt cache refresh: failed")
+            if exc.output:
+                last_line = ""
+                for line in exc.output.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        last_line = stripped
+                if last_line:
+                    print(f" - reason: {last_line}")
+            return 1
+        print(" - apt cache refresh: completed")
+    else:
+        print(" - apt cache refresh: skipped")
+    return 0
+
+
+def cmd_apt_deactivate(args: argparse.Namespace) -> int:
+    source_name = args.source_name or f"ofpm-{safe_path_component(args.package)}"
+    source_path = Path(args.source_path or f"/etc/apt/sources.list.d/{source_name}.list").resolve()
+    if not source_path.exists():
+        print(f"apt source file not found: {source_path}")
+        return 1
+    try:
+        source_path.unlink()
+    except PermissionError:
+        print(f"permission denied removing apt source file: {source_path}")
+        print("hint: run `sudo ofpm apt deactivate ...` or remove a source file under a writable directory")
+        return 1
+    print(f"deactivated apt local repo: {args.package}")
+    print(f" - source file removed: {source_path}")
+    if not args.no_update:
+        with contextlib.suppress(subprocess.CalledProcessError):
+            isolated_apt_update(source_path)
+        print(" - apt cache refresh: requested")
+    else:
+        print(" - apt cache refresh: skipped")
+    return 0
+
+
+def cmd_dnf_build_repo(args: argparse.Namespace) -> int:
+    try:
+        repo_root = build_dnf_local_repo(Path(args.path).resolve())
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    print(f"built dnf local repo: {args.repo_id}")
+    print(f" - repo root: {repo_root}")
+    print(f" - repo file preview path hint: /etc/yum.repos.d/{args.repo_id}.repo")
+    return 0
+
+
+def cmd_dnf_activate(args: argparse.Namespace) -> int:
+    try:
+        repo_root = build_dnf_local_repo(Path(args.path).resolve())
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    repo_file_path = Path(args.repo_file or f"/etc/yum.repos.d/{args.repo_id}.repo").resolve()
+    try:
+        repo_file_path.parent.mkdir(parents=True, exist_ok=True)
+        repo_file_path.write_text(dnf_repo_file_text(args.repo_id, repo_root), encoding="utf-8")
+    except PermissionError:
+        print(f"permission denied writing dnf repo file: {repo_file_path}")
+        print("hint: run `sudo ofpm dnf activate ...` or use `--repo-file` under a writable directory")
+        return 1
+    print(f"activated dnf local repo: {args.repo_id}")
+    print(f" - repo root: {repo_root}")
+    print(f" - repo file: {repo_file_path}")
+    if not args.no_refresh:
+        run_command_live(
+            ["dnf", "makecache", "--disablerepo=*", f"--enablerepo={args.repo_id}"],
+            label=f"dnf makecache {args.repo_id}",
+        )
+        print(" - dnf cache refresh: completed")
+    else:
+        print(" - dnf cache refresh: skipped")
+    return 0
+
+
+def cmd_dnf_deactivate(args: argparse.Namespace) -> int:
+    repo_file_path = Path(args.repo_file or f"/etc/yum.repos.d/{args.repo_id}.repo").resolve()
+    if not repo_file_path.exists():
+        print(f"dnf repo file not found: {repo_file_path}")
+        return 1
+    try:
+        repo_file_path.unlink()
+    except PermissionError:
+        print(f"permission denied removing dnf repo file: {repo_file_path}")
+        print("hint: run `sudo ofpm dnf deactivate ...` or remove a repo file under a writable directory")
+        return 1
+    print(f"deactivated dnf local repo: {args.repo_id}")
+    print(f" - repo file removed: {repo_file_path}")
+    return 0
+
+
 def print_json(data: dict) -> None:
     import json
 
@@ -1577,6 +2062,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_root_options(install_parser)
     install_parser.set_defaults(func=cmd_install)
 
+    reinstall_parser = subparsers.add_parser("reinstall")
+    reinstall_parser.add_argument("package")
+    reinstall_parser.add_argument("--version")
+    add_root_options(reinstall_parser)
+    reinstall_parser.set_defaults(func=cmd_reinstall)
+
     upgrade_parser = subparsers.add_parser("upgrade")
     upgrade_parser.add_argument("package")
     upgrade_parser.add_argument("--version")
@@ -1614,12 +2105,59 @@ def build_parser() -> argparse.ArgumentParser:
     env_parser.add_argument("--format", choices=["bash", "modulefile"], default="bash")
     env_parser.set_defaults(func=cmd_env)
 
+    plugin_parser = subparsers.add_parser("plugin")
+    plugin_subparsers = plugin_parser.add_subparsers(dest="plugin_command", required=True)
+
+    plugin_list_parser = plugin_subparsers.add_parser("list")
+    plugin_list_parser.add_argument("host_package")
+    add_root_options(plugin_list_parser)
+    plugin_list_parser.set_defaults(func=cmd_plugin_list)
+
+    plugin_attach_parser = plugin_subparsers.add_parser("attach")
+    plugin_attach_parser.add_argument("host_package")
+    plugin_attach_parser.add_argument("plugin_package")
+    add_root_options(plugin_attach_parser)
+    plugin_attach_parser.set_defaults(func=cmd_plugin_attach)
+
+    plugin_detach_parser = plugin_subparsers.add_parser("detach")
+    plugin_detach_parser.add_argument("host_package")
+    plugin_detach_parser.add_argument("plugin_package")
+    add_root_options(plugin_detach_parser)
+    plugin_detach_parser.set_defaults(func=cmd_plugin_detach)
+
+    plugin_refresh_parser = plugin_subparsers.add_parser("refresh")
+    plugin_refresh_parser.add_argument("host_package", nargs="?")
+    add_root_options(plugin_refresh_parser)
+    plugin_refresh_parser.set_defaults(func=cmd_plugin_refresh)
+
     install_cli_parser = subparsers.add_parser("install-cli")
     install_cli_parser.add_argument("output", nargs="?")
     install_cli_parser.add_argument("--python")
     install_cli_parser.add_argument("--source-root")
     install_cli_parser.add_argument("--force", action="store_true")
     install_cli_parser.set_defaults(func=cmd_install_cli)
+
+    package_parser = subparsers.add_parser("package")
+    package_subparsers = package_parser.add_subparsers(dest="package_command", required=True)
+
+    package_verify_parser = package_subparsers.add_parser("verify")
+    package_verify_parser.add_argument("path")
+    package_verify_parser.set_defaults(func=cmd_package_verify)
+
+    package_test_parser = package_subparsers.add_parser("test")
+    package_test_parser.add_argument("path")
+    package_test_parser.add_argument("--root", choices=["system", "user"], default="user")
+    package_test_parser.set_defaults(func=cmd_package_test)
+
+    package_init_parser = package_subparsers.add_parser("init")
+    package_init_parser.add_argument("path")
+    package_init_parser.add_argument("--package-id", required=True)
+    package_init_parser.add_argument("--version", default="1.0.0")
+    package_init_parser.add_argument("--profile", default="ubuntu-22.04")
+    package_init_parser.add_argument("--install-root")
+    package_init_parser.add_argument("--description")
+    package_init_parser.add_argument("--force", action="store_true")
+    package_init_parser.set_defaults(func=cmd_package_init)
 
     source_parser = subparsers.add_parser("source")
     source_subparsers = source_parser.add_subparsers(dest="source_command", required=True)
@@ -1680,6 +2218,12 @@ def build_parser() -> argparse.ArgumentParser:
     repo_import_parser.add_argument("--description")
     repo_import_parser.set_defaults(func=cmd_repo_import)
 
+    repo_import_package_parser = repo_subparsers.add_parser("import-package")
+    repo_import_package_parser.add_argument("repo_id")
+    repo_import_package_parser.add_argument("path")
+    repo_import_package_parser.add_argument("--replace", action="store_true")
+    repo_import_package_parser.set_defaults(func=cmd_repo_import_package)
+
     apt_parser = subparsers.add_parser("apt")
     apt_subparsers = apt_parser.add_subparsers(dest="apt_command", required=True)
 
@@ -1698,6 +2242,14 @@ def build_parser() -> argparse.ArgumentParser:
     apt_show_parser.add_argument("--json", action="store_true")
     apt_show_parser.set_defaults(func=cmd_apt_show)
 
+    apt_commands_parser = apt_subparsers.add_parser("commands")
+    apt_commands_parser.add_argument("repo_id")
+    apt_commands_parser.add_argument("package")
+    apt_commands_parser.add_argument("--version")
+    apt_commands_parser.add_argument("--with-deps", action="store_true")
+    apt_commands_parser.add_argument("--source-name")
+    apt_commands_parser.set_defaults(func=cmd_apt_commands)
+
     apt_download_parser = apt_subparsers.add_parser("download")
     apt_download_parser.add_argument("package")
     apt_download_parser.add_argument("--version")
@@ -1706,6 +2258,34 @@ def build_parser() -> argparse.ArgumentParser:
     apt_download_parser.add_argument("--arch")
     apt_download_parser.add_argument("--with-deps", action="store_true")
     apt_download_parser.set_defaults(func=cmd_apt_download)
+
+    apt_build_repo_parser = apt_subparsers.add_parser("build-repo")
+    apt_build_repo_parser.add_argument("repo_id")
+    apt_build_repo_parser.add_argument("package")
+    apt_build_repo_parser.add_argument("--version")
+    apt_build_repo_parser.set_defaults(func=cmd_apt_build_repo)
+
+    apt_source_line_parser = apt_subparsers.add_parser("source-line")
+    apt_source_line_parser.add_argument("repo_id")
+    apt_source_line_parser.add_argument("package")
+    apt_source_line_parser.add_argument("--version")
+    apt_source_line_parser.set_defaults(func=cmd_apt_source_line)
+
+    apt_activate_parser = apt_subparsers.add_parser("activate")
+    apt_activate_parser.add_argument("repo_id")
+    apt_activate_parser.add_argument("package")
+    apt_activate_parser.add_argument("--version")
+    apt_activate_parser.add_argument("--source-name")
+    apt_activate_parser.add_argument("--source-path")
+    apt_activate_parser.add_argument("--no-update", action="store_true")
+    apt_activate_parser.set_defaults(func=cmd_apt_activate)
+
+    apt_deactivate_parser = apt_subparsers.add_parser("deactivate")
+    apt_deactivate_parser.add_argument("package")
+    apt_deactivate_parser.add_argument("--source-name")
+    apt_deactivate_parser.add_argument("--source-path")
+    apt_deactivate_parser.add_argument("--no-update", action="store_true")
+    apt_deactivate_parser.set_defaults(func=cmd_apt_deactivate)
 
     apt_import_parser = apt_subparsers.add_parser("import")
     apt_import_parser.add_argument("repo_id")
@@ -1716,6 +2296,26 @@ def build_parser() -> argparse.ArgumentParser:
     apt_import_parser.add_argument("--install-root")
     apt_import_parser.add_argument("--description")
     apt_import_parser.set_defaults(func=cmd_apt_import)
+
+    dnf_parser = subparsers.add_parser("dnf")
+    dnf_subparsers = dnf_parser.add_subparsers(dest="dnf_command", required=True)
+
+    dnf_build_repo_parser = dnf_subparsers.add_parser("build-repo")
+    dnf_build_repo_parser.add_argument("repo_id")
+    dnf_build_repo_parser.add_argument("path")
+    dnf_build_repo_parser.set_defaults(func=cmd_dnf_build_repo)
+
+    dnf_activate_parser = dnf_subparsers.add_parser("activate")
+    dnf_activate_parser.add_argument("repo_id")
+    dnf_activate_parser.add_argument("path")
+    dnf_activate_parser.add_argument("--repo-file")
+    dnf_activate_parser.add_argument("--no-refresh", action="store_true")
+    dnf_activate_parser.set_defaults(func=cmd_dnf_activate)
+
+    dnf_deactivate_parser = dnf_subparsers.add_parser("deactivate")
+    dnf_deactivate_parser.add_argument("repo_id")
+    dnf_deactivate_parser.add_argument("--repo-file")
+    dnf_deactivate_parser.set_defaults(func=cmd_dnf_deactivate)
 
     return parser
 

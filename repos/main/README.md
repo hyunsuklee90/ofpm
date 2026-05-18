@@ -19,7 +19,7 @@ Then inspect and use the repo:
 
 ```bash
 ofpm list --all
-ofpm show node-runtime
+ofpm show node
 ofpm apt list --downloaded
 ```
 

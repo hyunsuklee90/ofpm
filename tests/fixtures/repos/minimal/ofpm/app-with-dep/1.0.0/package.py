@@ -17,7 +17,6 @@ def package():
             {
                 "package_id": "helper-lib",
                 "version": "1.0.0",
-                "required": True,
             }
         ],
         "metadata": {

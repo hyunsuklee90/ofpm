@@ -1,0 +1,39 @@
+FROM rockylinux/rockylinux:9.4
+
+RUN dnf install -y \
+        ca-certificates \
+        createrepo_c \
+        curl-minimal \
+        dnf-plugins-core \
+        file \
+        findutils \
+        git \
+        gzip \
+        iproute \
+        less \
+        net-tools \
+        python3 \
+        procps-ng \
+        rsync \
+        sudo \
+        tar \
+        unzip \
+        vim-minimal \
+        wget \
+        which \
+        xz \
+        zstd \
+        zip \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+RUN useradd -m -s /bin/bash -G wheel hyunsuk \
+    && echo 'hyunsuk ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/hyunsuk \
+    && chmod 0440 /etc/sudoers.d/hyunsuk \
+    && mkdir -p /home/hyunsuk/.local/bin /home/hyunsuk/bin /home/hyunsuk/.cache /home/hyunsuk/shared \
+    && chown -R hyunsuk:hyunsuk /home/hyunsuk
+
+USER hyunsuk
+WORKDIR /home/hyunsuk
+
+CMD ["sleep", "infinity"]

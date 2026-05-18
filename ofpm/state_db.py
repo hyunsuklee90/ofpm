@@ -39,6 +39,10 @@ def managed_history_path(managed_root: Path) -> Path:
     return managed_state_root(managed_root) / "history.json"
 
 
+def managed_plugins_path(managed_root: Path) -> Path:
+    return managed_state_root(managed_root) / "plugins.json"
+
+
 def managed_state_file(managed_root: Path, package_id: str) -> Path:
     return managed_installed_state_root(managed_root) / f"{package_id}.json"
 
@@ -58,6 +62,17 @@ def load_history(managed_root: Path) -> dict[str, Any]:
     if not path.exists():
         return {"schema_version": "1", "events": []}
     return load_json(path)
+
+
+def load_plugins_state(managed_root: Path) -> dict[str, Any]:
+    path = managed_plugins_path(managed_root)
+    if not path.exists():
+        return {"schema_version": "1", "hosts": {}}
+    return load_json(path)
+
+
+def save_plugins_state(managed_root: Path, data: dict[str, Any]) -> None:
+    dump_json(managed_plugins_path(managed_root), data)
 
 
 def append_history_event(managed_root: Path, event: dict[str, Any]) -> None:

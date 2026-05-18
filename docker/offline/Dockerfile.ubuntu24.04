@@ -1,0 +1,39 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        file \
+        findutils \
+        git \
+        gzip \
+        iproute2 \
+        less \
+        net-tools \
+        python3 \
+        procps \
+        rsync \
+        sudo \
+        tar \
+        unzip \
+        vim-tiny \
+        wget \
+        xz-utils \
+        zstd \
+        zip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash -G sudo hyunsuk \
+    && echo 'hyunsuk ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/hyunsuk \
+    && chmod 0440 /etc/sudoers.d/hyunsuk \
+    && mkdir -p /home/hyunsuk/.local/bin /home/hyunsuk/bin /home/hyunsuk/.cache \
+    && chown -R hyunsuk:hyunsuk /home/hyunsuk
+
+USER hyunsuk
+WORKDIR /home/hyunsuk
+
+CMD ["sleep", "infinity"]
