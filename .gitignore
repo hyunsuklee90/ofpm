@@ -17,3 +17,9 @@ tests/work/
 # Large repo-managed payloads are intentionally not committed.
 repos/main/ofpm/*/*/payload/
 repos/main/apt/*/*/payload/
+!repos/main/ofpm/cds/*/payload/
+!repos/main/ofpm/cds/*/payload/**
+!repos/main/ofpm/node/*/payload/
+!repos/main/ofpm/node/*/payload/**
+!repos/main/ofpm/pi-agent/*/payload/
+!repos/main/ofpm/pi-agent/*/payload/**
