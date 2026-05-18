@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OFPM_SRC="/mnt/d/OneDrive/0project/ofpm"
 SHARED_DIR="/home/hyunsuk/shared"
+OFPM_ARTIFACTS="/mnt/d/ofpm/artifacts"
 NETWORK_NAME="offline-internal-net"
 
 containers=(
@@ -33,6 +34,7 @@ docker network rm "${NETWORK_NAME}" >/dev/null 2>&1 || true
 docker network create --internal "${NETWORK_NAME}" >/dev/null
 
 mkdir -p "${SHARED_DIR}"
+mkdir -p "${OFPM_ARTIFACTS}"
 
 docker build -t offline:ubuntu24.04 -f "${ROOT_DIR}/docker/offline/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
 docker build -t offline:rocky9.4 -f "${ROOT_DIR}/docker/offline/Dockerfile.rocky9.4" "${ROOT_DIR}"
@@ -43,6 +45,7 @@ docker run -d \
   --network "${NETWORK_NAME}" \
   -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
   -v "${SHARED_DIR}:/home/hyunsuk/shared" \
+  -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
   offline:ubuntu24.04 >/dev/null
 
 docker run -d \
@@ -50,6 +53,7 @@ docker run -d \
   --network "${NETWORK_NAME}" \
   -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
   -v "${SHARED_DIR}:/home/hyunsuk/shared" \
+  -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
   offline:rocky9.4 >/dev/null
 
 docker run -d \
@@ -57,6 +61,7 @@ docker run -d \
   --network "${NETWORK_NAME}" \
   -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
   -v "${SHARED_DIR}:/home/hyunsuk/shared" \
+  -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
   offline:centos7 >/dev/null
 
 echo "rebuilt offline containers:"

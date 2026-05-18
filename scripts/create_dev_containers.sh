@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OFPM_SRC="/mnt/d/OneDrive/0project/ofpm"
 SHARED_DIR="/home/hyunsuk/shared"
+OFPM_ARTIFACTS="/mnt/d/ofpm/artifacts"
 OFFLINE_NETWORK="offline-internal-net"
 ONLINE_NETWORK="online-bridge-net"
 
@@ -42,10 +43,12 @@ create_container() {
     --network "${network}" \
     -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
     -v "${SHARED_DIR}:/home/hyunsuk/shared" \
+    -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
     "${image}" >/dev/null
 }
 
 mkdir -p "${SHARED_DIR}"
+mkdir -p "${OFPM_ARTIFACTS}"
 ensure_networks
 ensure_images
 

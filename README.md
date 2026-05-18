@@ -19,14 +19,24 @@ python3 -m ofpm ...
 
 If installed with `pip`, the `ofpm` command is created automatically from the package entrypoint.
 
-For a non-`pip` site install, generate a launcher script at the desired command path:
+For a non-`pip` install, install the `ofpm` launcher from the current source tree:
 
 ```bash
-python3 -m ofpm install-cli /opt/ofpm/bin/ofpm
+sudo python3 -m ofpm install-ofpm --root system
 ```
 
+By default, a system install writes:
+
+- `/opt/ofpm/bin/ofpm`
+- `/etc/profile.d/ofpm.sh` for PATH and `OFPM_ROOT`
+- a source block into `/etc/bash.bashrc` or `/etc/bashrc` for interactive bash shells
+
 That launcher points at the current `ofpm` source tree and runs `python -m ofpm` with the correct `PYTHONPATH`.
-If you omit the output path, `ofpm` creates `./ofpm` in the current directory when that path is free.
+
+By default, a user install writes:
+
+- `~/.ofpm/bin/ofpm`
+- an `ofpm` block into `~/.bashrc` for PATH and `OFPM_ROOT`
 
 ## Current Phase-1 Status
 
@@ -75,10 +85,10 @@ Show registered repos:
 python3 -m ofpm repo list
 ```
 
-Install a non-`pip` launcher:
+Install `ofpm` from the current source tree:
 
 ```bash
-python3 -m ofpm install-cli /tmp/ofpm
+python3 -m ofpm install-ofpm --root user --output /tmp/ofpm --no-profile --no-symlink
 /tmp/ofpm --help
 ```
 

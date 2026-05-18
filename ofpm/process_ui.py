@@ -14,11 +14,24 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
+def _supports_live_line() -> bool:
+    try:
+        return sys.stdout.isatty() and os.environ.get("TERM", "").strip().lower() not in {"", "dumb"}
+    except Exception:
+        return False
+
+
 def _render_live_line(label: str, spinner_index: int, started: float, status: str) -> None:
     spinner = "|/-\\"
     elapsed = time.monotonic() - started
     frame = spinner[spinner_index % len(spinner)]
     sys.stdout.write(f"\r - {label} {frame} {elapsed:4.1f}s {status[:120]}")
+    sys.stdout.flush()
+
+
+def _print_sparse_line(prefix: str, label: str, started: float, status: str) -> None:
+    elapsed = time.monotonic() - started
+    sys.stdout.write(f" - {label} {prefix} {elapsed:4.1f}s {status[:120]}\n")
     sys.stdout.flush()
 
 
@@ -29,6 +42,9 @@ def run_command_live(
     label: str,
     merge_stderr: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    stall_threshold_seconds = 10.0
+    sparse_interval_seconds = 5.0
+    live_mode = _supports_live_line()
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -51,6 +67,12 @@ def run_command_live(
     partials: dict[object, str] = {}
     last_message = "starting"
     last_render = 0.0
+    last_activity = started
+    last_sparse_status = ""
+
+    if not live_mode:
+        _print_sparse_line("starting", label, started, last_message)
+        last_sparse_status = last_message
 
     while True:
         events = selector.select(timeout=0.2)
@@ -64,6 +86,7 @@ def run_command_live(
                     stdout_chunks.append(data)
                 else:
                     stderr_chunks.append(data)
+                last_activity = time.monotonic()
                 partial = partials.get(key.fileobj, "") + data.decode("utf-8", errors="replace")
                 while "\n" in partial:
                     line, partial = partial.split("\n", 1)
@@ -74,10 +97,20 @@ def run_command_live(
         if process.poll() is not None and not events:
             break
         now = time.monotonic()
-        if now - last_render >= 0.2:
-            _render_live_line(label, spinner_index, started, last_message)
-            spinner_index += 1
+        idle_seconds = now - last_activity
+        if idle_seconds >= stall_threshold_seconds:
+            status = f"stalled? no new output for {idle_seconds:4.1f}s | last: {last_message}"
+        else:
+            status = last_message
+        if live_mode:
+            if now - last_render >= 0.2:
+                _render_live_line(label, spinner_index, started, status)
+                spinner_index += 1
+                last_render = now
+        elif now - last_render >= sparse_interval_seconds and status != last_sparse_status:
+            _print_sparse_line("running", label, started, status)
             last_render = now
+            last_sparse_status = status
 
     for partial in partials.values():
         if partial.strip():
@@ -107,6 +140,7 @@ def run_task_live(
     started = time.monotonic()
     spinner_index = 0
     last_render = 0.0
+    live_mode = _supports_live_line()
     result: dict[str, T] = {}
     error: dict[str, BaseException] = {}
 
@@ -119,11 +153,18 @@ def run_task_live(
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
 
+    if not live_mode:
+        _print_sparse_line("starting", label, started, status)
+
     while thread.is_alive():
         now = time.monotonic()
-        if now - last_render >= 0.2:
-            _render_live_line(label, spinner_index, started, status)
-            spinner_index += 1
+        if live_mode:
+            if now - last_render >= 0.2:
+                _render_live_line(label, spinner_index, started, status)
+                spinner_index += 1
+                last_render = now
+        elif now - last_render >= 5.0:
+            _print_sparse_line("running", label, started, status)
             last_render = now
         thread.join(timeout=0.2)
 

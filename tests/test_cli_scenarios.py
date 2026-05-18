@@ -478,6 +478,96 @@ class CliScenarioTests(unittest.TestCase):
         self.assertIn("sudo ofpm apt activate main zstd --source-name ofpm-zstd", output)
         self.assertIn("dpkg -s zstd >/dev/null 2>&1 || sudo apt install zstd", output)
 
+    def test_install_ofpm_writes_launcher_profile_and_symlink(self) -> None:
+        with self.make_tempdir("ofpm-install-self-") as temp_dir:
+            temp_root = Path(temp_dir)
+            launcher_path = temp_root / "opt" / "ofpm" / "bin" / "ofpm"
+            profile_path = temp_root / "etc" / "profile.d" / "ofpm.sh"
+            bashrc_path = temp_root / "etc" / "bash.bashrc"
+            bashrc_path.parent.mkdir(parents=True, exist_ok=True)
+            bashrc_path.write_text("# system bashrc\n", encoding="utf-8")
+
+            args = argparse.Namespace(
+                output=str(launcher_path),
+                python="/usr/bin/python3",
+                source_root=str(REPO_ROOT),
+                root="system",
+                profile_path=str(profile_path),
+                bashrc_path=str(bashrc_path),
+                symlink_path=None,
+                no_profile=False,
+                no_symlink=False,
+                force=False,
+            )
+
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                result = cli.cmd_install_cli(args)
+            self.assertEqual(result, 0)
+
+            self.assertTrue(launcher_path.exists())
+            self.assertTrue(os.access(launcher_path, os.X_OK))
+            launcher_text = launcher_path.read_text(encoding="utf-8")
+            self.assertIn('exec "/usr/bin/python3" -m ofpm "$@"', launcher_text)
+            self.assertIn(f'export PYTHONPATH="{REPO_ROOT}${{PYTHONPATH:+:$PYTHONPATH}}"', launcher_text)
+
+            self.assertTrue(profile_path.exists())
+            profile_text = profile_path.read_text(encoding="utf-8")
+            self.assertIn(f'export OFPM_ROOT="{launcher_path.parent.parent}"', profile_text)
+            self.assertIn(f'export PATH="{launcher_path.parent}:$PATH"', profile_text)
+            bashrc_text = bashrc_path.read_text(encoding="utf-8")
+            self.assertEqual(bashrc_text.count("# >>> ofpm >>>"), 1)
+            self.assertIn(f'[ -r "{profile_path}" ] && source "{profile_path}"', bashrc_text)
+
+            output = captured.getvalue()
+            self.assertIn("installed ofpm launcher", output)
+            self.assertIn(f" - output: {launcher_path}", output)
+            self.assertIn(f" - shell hook: {profile_path}", output)
+            self.assertIn(f" - bashrc hook: {bashrc_path}", output)
+            self.assertIn(" - command link: disabled", output)
+
+    def test_install_ofpm_user_updates_single_bashrc_block(self) -> None:
+        with self.make_tempdir("ofpm-install-user-") as temp_dir:
+            temp_root = Path(temp_dir)
+            home = temp_root / "home" / "tester"
+            bashrc_path = home / ".bashrc"
+            bashrc_path.parent.mkdir(parents=True, exist_ok=True)
+            bashrc_path.write_text("# existing line\n", encoding="utf-8")
+            launcher_path = home / ".ofpm" / "bin" / "ofpm"
+
+            args = argparse.Namespace(
+                output=str(launcher_path),
+                python="/usr/bin/python3",
+                source_root=str(REPO_ROOT),
+                root="user",
+                profile_path=str(bashrc_path),
+                bashrc_path=None,
+                symlink_path=None,
+                no_profile=False,
+                no_symlink=False,
+                force=False,
+            )
+
+            first = io.StringIO()
+            with contextlib.redirect_stdout(first):
+                result = cli.cmd_install_cli(args)
+            self.assertEqual(result, 0)
+
+            first_bashrc = bashrc_path.read_text(encoding="utf-8")
+            self.assertEqual(first_bashrc.count("# >>> ofpm >>>"), 1)
+            self.assertEqual(first_bashrc.count("# <<< ofpm <<<"), 1)
+            self.assertIn('export OFPM_ROOT="', first_bashrc)
+            self.assertIn(f'export PATH="{launcher_path.parent}:$PATH"', first_bashrc)
+
+            second = io.StringIO()
+            with contextlib.redirect_stdout(second):
+                result = cli.cmd_install_cli(args)
+            self.assertEqual(result, 0)
+
+            second_bashrc = bashrc_path.read_text(encoding="utf-8")
+            self.assertEqual(second_bashrc.count("# >>> ofpm >>>"), 1)
+            self.assertEqual(second_bashrc.count("# <<< ofpm <<<"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
