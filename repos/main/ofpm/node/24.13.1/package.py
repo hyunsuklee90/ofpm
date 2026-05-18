@@ -7,6 +7,7 @@ from pathlib import Path
 from ofpm.recipes import OfpmRecipe
 from ofpm.runtime_support import (
     detect_single_subdir,
+    expose_public_executables,
     expanded_package_entries,
     record_install,
     remove_managed_payload,
@@ -65,6 +66,12 @@ class Recipe(OfpmRecipe):
         extracted_root = detect_single_subdir(version_root, exclude_names={"artifacts"})
         current_link = runtime.managed_root / "payloads" / package_id / "current"
         reset_current_link(current_link, extracted_root)
+        executables = [
+            str(current_link / "bin" / "node"),
+            str(current_link / "bin" / "npm"),
+            str(current_link / "bin" / "npx"),
+        ]
+        public_executables = expose_public_executables(runtime.managed_root, executables)
 
         state = {
             "schema_version": "1",
@@ -81,11 +88,8 @@ class Recipe(OfpmRecipe):
                 "env": package_data.get("env", {}),
                 "version_root": str(version_root),
                 "current_path": str(current_link),
-                "executables": [
-                    str(current_link / "bin" / "node"),
-                    str(current_link / "bin" / "npm"),
-                    str(current_link / "bin" / "npx"),
-                ],
+                "executables": executables,
+                "public_executables": public_executables,
                 "artifacts": [
                     {
                         "source": str(tarball_source),

@@ -7,6 +7,7 @@ import subprocess
 from ofpm.process_ui import run_command_live
 from ofpm.recipes import OfpmRecipe
 from ofpm.runtime_support import (
+    expose_public_executables,
     package_files_by_target,
     record_install,
     remove_managed_payload,
@@ -102,6 +103,8 @@ class Recipe(OfpmRecipe):
         current_link = runtime.managed_root / "payloads" / package_id / "current"
         reset_current_link(current_link, version_root)
         library_dir = current_link / "lib" / "ollama"
+        executables = [str(current_link / "bin" / "ollama")]
+        public_executables = expose_public_executables(runtime.managed_root, executables)
 
         state = {
             "schema_version": "1",
@@ -118,7 +121,8 @@ class Recipe(OfpmRecipe):
                 "env": package_data.get("env", {}),
                 "version_root": str(version_root),
                 "current_path": str(current_link),
-                "executables": [str(current_link / "bin" / "ollama")],
+                "executables": executables,
+                "public_executables": public_executables,
                 "library_dir": str(library_dir),
                 "install_mode": install_mode,
                 "source_artifacts": [

@@ -56,6 +56,46 @@ def reset_current_link(current_link: Path, target: Path) -> None:
     current_link.symlink_to(target, target_is_directory=target.is_dir())
 
 
+def public_bin_dir(managed_root: Path) -> Path:
+    return managed_root / "bin"
+
+
+def expose_public_executables(managed_root: Path, executables: list[str]) -> list[str]:
+    bin_dir = public_bin_dir(managed_root)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    public_links: list[str] = []
+    for executable in executables:
+        source_path = Path(executable)
+        link_path = bin_dir / source_path.name
+        public_links.append(str(link_path))
+        if link_path.is_symlink():
+            current_target = Path(os.readlink(link_path))
+            if current_target == source_path:
+                continue
+            raise FileExistsError(
+                f"public executable already provided by another package: {link_path} -> {current_target}"
+            )
+        if link_path.exists():
+            raise FileExistsError(f"public executable path already exists and is not a symlink: {link_path}")
+        link_path.symlink_to(source_path, target_is_directory=False)
+    return public_links
+
+
+def remove_public_executables(installed_state: dict[str, Any]) -> None:
+    package = installed_state["raw"]["package"]
+    public_links = package.get("public_executables", [])
+    executables = package.get("executables", [])
+    expected_links = dict(zip(public_links, executables, strict=False))
+    for link_text, target_text in expected_links.items():
+        link_path = Path(link_text)
+        if not link_path.is_symlink():
+            continue
+        current_target = Path(os.readlink(link_path))
+        expected_target = Path(target_text)
+        if current_target == expected_target:
+            link_path.unlink()
+
+
 def package_files_by_target(
     package_data: dict[str, Any],
     package_manifest: Path,
@@ -140,6 +180,11 @@ def install_managed_files_package(
     reset_current_link(current_link, version_root)
     progress(f"[ofpm] install {package_id}@{version}: activated current link")
     progress(f"  current link: {current_link} -> {version_root}")
+    public_executables = expose_public_executables(managed_root, executables)
+    if public_executables:
+        progress(f"[ofpm] install {package_id}@{version}: exposed public executables")
+        for public_link in public_executables:
+            progress(f"  public link: {public_link}")
 
     state = {
         "schema_version": "1",
@@ -157,6 +202,7 @@ def install_managed_files_package(
             "version_root": str(version_root),
             "current_path": str(current_link),
             "executables": executables,
+            "public_executables": public_executables,
             "tracked_files": tracked_files,
             "source_artifacts": source_artifacts,
         },
@@ -194,6 +240,8 @@ def remove_managed_payload(
                 current_path.unlink()
         except FileNotFoundError:
             current_path.unlink()
+
+    remove_public_executables(installed_state)
 
     if version_root.exists():
         shutil.rmtree(version_root)

@@ -105,6 +105,9 @@ class CliScenarioTests(unittest.TestCase):
                 env=env,
             )
             self.assertIn("installed package: hello-tool 1.0.0", install.stdout)
+            public_hello = managed_root / "bin" / "hello"
+            self.assertTrue(public_hello.is_symlink())
+            self.assertEqual(public_hello.resolve(), managed_root / "payloads" / "hello-tool" / "1.0.0" / "bin" / "hello")
 
             listed = self.run_cli(
                 "list",
@@ -160,6 +163,7 @@ class CliScenarioTests(unittest.TestCase):
                 env=env,
             )
             self.assertIn("removed package: hello-tool 1.0.0", removed.stdout)
+            self.assertFalse(public_hello.exists())
 
             listed_again = self.run_cli(
                 "list",

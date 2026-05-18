@@ -10,6 +10,7 @@ from ofpm.recipes import OfpmRecipe
 from ofpm.package_def import load_package_file
 from ofpm.repo_data import find_package_manifest, installed_states
 from ofpm.runtime_support import (
+    expose_public_executables,
     find_installed_state,
     managed_state_root,
     package_files_by_target,
@@ -202,6 +203,12 @@ class Recipe(OfpmRecipe):
             shutil.copy2(fd_source, bin_dir / "fd")
             os.chmod(bin_dir / "fd", 0o755)
         dump_json(config_dir / "models.json", self._default_models_config())
+        executables = [
+            str(current_link / "bin" / "pi"),
+            str(current_link / "bin" / "rg"),
+            str(current_link / "bin" / "fd"),
+        ]
+        public_executables = expose_public_executables(runtime.managed_root, executables)
 
         state = {
             "schema_version": "1",
@@ -220,11 +227,8 @@ class Recipe(OfpmRecipe):
                 "current_path": str(current_link),
                 "prefix_root": str(prefix_root),
                 "config_dir": str(config_dir),
-                "executables": [
-                    str(current_link / "bin" / "pi"),
-                    str(current_link / "bin" / "rg"),
-                    str(current_link / "bin" / "fd"),
-                ],
+                "executables": executables,
+                "public_executables": public_executables,
                 "node_runtime_path": str(node_current),
                 "source_artifacts": [str(tgz_source), str(npm_cache_source)],
             },
