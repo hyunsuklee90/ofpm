@@ -236,28 +236,24 @@ def apt_download_package(output_dir: Path, package_name: str, version: str) -> P
     raise ValueError(f"unable to determine downloaded .deb for {package_name}={version}")
 
 
-def build_apt_local_repo(
-    provider_manifest_path: Path,
-    snapshot: dict[str, Any],
-) -> Path:
-    artifact_root = apt_snapshot_artifact_root(provider_manifest_path, snapshot)
-    pool_dir = artifact_root / "pool"
+def build_apt_local_repo_from_root(repo_root: Path, label: str) -> Path:
+    pool_dir = repo_root / "pool"
     if not pool_dir.exists():
-        raise ValueError(f"apt snapshot pool directory not found: {pool_dir}")
+        raise ValueError(f"apt repo pool directory not found: {pool_dir}")
 
     try:
         scan = run_command_live(
             ["dpkg-scanpackages", "pool", "/dev/null"],
-            cwd=artifact_root,
-            label=f"scan apt repo {snapshot['package_name']}",
+            cwd=repo_root,
+            label=f"scan apt repo {label}",
             merge_stderr=False,
         )
     except FileNotFoundError as exc:
         raise ValueError("missing required builder tool: dpkg-scanpackages") from exc
 
     packages_text = scan.stdout
-    packages_path = artifact_root / "Packages"
-    packages_gz_path = artifact_root / "Packages.gz"
+    packages_path = repo_root / "Packages"
+    packages_gz_path = repo_root / "Packages.gz"
 
     def write_packages() -> None:
         packages_path.write_text(packages_text, encoding="utf-8")
@@ -267,20 +263,49 @@ def build_apt_local_repo(
             handle.write(packages_text)
 
     run_task_live(
-        f"write apt Packages {snapshot['package_name']}",
+        f"write apt Packages {label}",
         write_packages,
         status=str(packages_path),
     )
     run_task_live(
-        f"write apt Packages.gz {snapshot['package_name']}",
+        f"write apt Packages.gz {label}",
         write_packages_gz,
         status=str(packages_gz_path),
     )
-    return artifact_root
+    return repo_root
+
+
+def build_apt_local_repo(
+    provider_manifest_path: Path,
+    snapshot: dict[str, Any],
+) -> Path:
+    artifact_root = apt_snapshot_artifact_root(provider_manifest_path, snapshot)
+    return build_apt_local_repo_from_root(artifact_root, str(snapshot["package_name"]))
 
 
 def apt_source_line(local_repo_root: Path) -> str:
     return f"deb [trusted=yes] file:{local_repo_root.resolve().as_posix()} ./"
+
+
+def is_apt_local_repo_root(path: Path) -> bool:
+    return (path / "pool").exists() and (path / "Packages").exists() and (path / "Packages.gz").exists()
+
+
+def find_apt_local_repo_roots(root: Path) -> list[Path]:
+    resolved_root = root.expanduser().resolve()
+    if is_apt_local_repo_root(resolved_root):
+        return [resolved_root]
+
+    results: list[Path] = []
+    seen: set[Path] = set()
+    for packages_path in resolved_root.rglob("Packages"):
+        repo_root = packages_path.parent
+        if repo_root in seen:
+            continue
+        if is_apt_local_repo_root(repo_root):
+            seen.add(repo_root)
+            results.append(repo_root)
+    return sorted(results)
 
 
 def apt_repo_access_issue(local_repo_root: Path, sandbox_user: str = "_apt") -> str | None:

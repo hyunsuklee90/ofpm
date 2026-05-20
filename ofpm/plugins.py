@@ -21,10 +21,7 @@ def default_repo_path(root: Path | None = None) -> Path:
 
 def effective_registered_repos(root: Path | None = None) -> dict[str, str]:
     base = root or project_repo_root()
-    repos = registered_repos(base)
-    if repos:
-        return repos
-    return {"main": str(default_repo_path(base))}
+    return registered_repos(base)
 
 
 def find_registered_package_manifest(package_id: str, version: str | None = None) -> Path | None:

@@ -9,7 +9,7 @@ snapshot as the main transfer unit.
 
 The intended flow is:
 
-- builder-side local sources or provider downloads
+- builder-side local paths or provider downloads
 - import into an `ofpm` repo
 - copy the repo to the target machine
 - register the repo and run offline package-manager commands
@@ -103,13 +103,10 @@ Does not own:
 
 Builder-side commands:
 
-- `ofpm source add <name> <path>`
-- `ofpm source show <name>`
-- `ofpm repo import <repo> --source <name> --package <package>`
+- `ofpm repo import <repo> --path <path> --package <package>`
 - `ofpm apt list`
 - `ofpm apt show <package>`
 - `ofpm apt download <package>`
-- `ofpm apt import <repo> <package>`
 
 Target-side commands:
 

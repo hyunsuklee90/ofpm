@@ -44,7 +44,7 @@
 - Builder-side artifact acquisition should be represented as separate provider wrapper commands
 - First implemented online acquisition command family: `apt list`, `apt show`, `apt download`
 - Preferred offline transfer workflow: prepare a portable repo snapshot and copy the repo directory
-- Local builder-side directories should be registered with `source add` and imported with `repo import`
+- Local builder-side directories should be passed directly to `repo import --path`
 
 ### State Direction
 

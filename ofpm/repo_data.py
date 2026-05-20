@@ -29,11 +29,10 @@ def user_config_root() -> Path:
 
 
 def repo_local_config_root(repo_root: Path) -> Path:
-    return repo_root / "local"
-
-
-def user_repos_config_path() -> Path:
-    return user_config_root() / "repos.json"
+    installed_home = os.environ.get("OFPM_HOME", "").strip()
+    if installed_home:
+        return Path(installed_home).expanduser().resolve() / "config"
+    return repo_root / "config"
 
 
 def repo_repos_config_path(repo_root: Path) -> Path:
@@ -70,15 +69,11 @@ def repo_package_manifests(repo_root: Path) -> list[Path]:
     return sorted(package_dir.glob("*/*/package.json"))
 
 
-def registered_repos(repo_root: Path) -> dict[str, str]:
-    repos: dict[str, str] = {}
-    repo_config = repo_repos_config_path(repo_root)
-    user_config = user_repos_config_path()
-    if repo_config.exists():
-        repos.update(load_json(repo_config))
-    if user_config.exists():
-        repos.update(load_json(user_config))
-    return dict(sorted(repos.items()))
+def registered_repos(repo_root: Path, config_path: Path | None = None) -> dict[str, str]:
+    path = config_path or repo_repos_config_path(repo_root)
+    if not path.exists():
+        return {}
+    return dict(sorted(load_json(path).items()))
 
 
 def resolve_artifact_root(package_data: dict[str, Any], artifact_roots: dict[str, str] | None) -> Path | None:

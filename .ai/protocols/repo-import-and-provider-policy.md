@@ -6,8 +6,8 @@ Builder-side commands prepare repo content. They do not act like target-side pac
 
 ## Source Import Rules
 
-- `source add` registers local builder-side input paths
-- `repo import` turns a registered source into a repo package
+- `repo import` takes a direct local builder-side input path
+- `repo import` turns that path into a repo package
 - imported native packages should land under `repos/<name>/ofpm/<package>/<version>/`
 - imported package definitions should be valid package-local recipes
 

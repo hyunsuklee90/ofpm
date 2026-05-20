@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ofpm Overview</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --panel: #fffdf8;
+      --ink: #1f2933;
+      --muted: #5f6b76;
+      --line: #d7cfbf;
+      --accent: #2f6f63;
+      --accent-soft: #dfeee9;
+      --code: #f2ede2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Noto Sans", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, #d8ebe3 0, transparent 28rem),
+        linear-gradient(180deg, #f8f5ee 0%, var(--bg) 100%);
+      line-height: 1.65;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 36px 20px 72px;
+    }
+    header {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 28px;
+      box-shadow: 0 12px 32px rgba(31, 41, 51, 0.06);
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 { line-height: 1.2; margin: 0 0 12px; }
+    h1 { font-size: clamp(2rem, 4vw, 3rem); }
+    h2 { font-size: 1.45rem; margin-top: 0; }
+    h3 { font-size: 1.1rem; }
+    p { margin: 0 0 12px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 22px;
+      margin-top: 18px;
+      box-shadow: 0 10px 28px rgba(31, 41, 51, 0.04);
+    }
+    code {
+      font-family: "Cascadia Code", "Fira Code", monospace;
+      font-size: 0.95em;
+      background: var(--code);
+      padding: 0.12em 0.35em;
+      border-radius: 6px;
+    }
+    pre {
+      margin: 12px 0 0;
+      overflow-x: auto;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      white-space: pre-wrap;
+    }
+    pre code { background: transparent; padding: 0; }
+    ul, ol { margin: 10px 0 0 20px; padding: 0; }
+    li + li { margin-top: 6px; }
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 10px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .lead {
+      color: var(--muted);
+      max-width: 48rem;
+      font-size: 1.05rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">ofpm Docs</div>
+      <h1>Ofpm Overview</h1>
+      <p class="lead">Human-friendly reference generated from the Markdown source under <code>docs/md/</code>.</p>
+    </header>
+    <h1>ofpm Overview</h1>
+    <p>This document explains installation, runtime mode selection, repo registration, and the <code>apt</code> and <code>dnf</code> helper flows.</p>
+    <section>
+    <h2>1. What ofpm Does</h2>
+    <p><code>ofpm</code> has two different roles:</p>
+    <ul>
+    <li>native package manager for <code>ofpm</code>-style packages under <code>repos/&lt;name&gt;/ofpm/...</code></li>
+    <li>offline repo helper for provider ecosystems like <code>apt</code> and <code>dnf</code></li>
+    </ul>
+    <p>That means:</p>
+    <ul>
+    <li><code>ofpm install/remove/verify/...</code> are for <code>ofpm</code> packages</li>
+    <li><code>ofpm apt ...</code> and <code>ofpm dnf ...</code> help prepare offline provider repos</li>
+    <li>actual provider installs still happen through <code>apt</code> or <code>dnf</code></li>
+    </ul>
+    </section>
+    <section>
+    <h2>2. Runtime Modes</h2>
+    <p><code>ofpm</code> runs in one of two modes.</p>
+    <h3>Dev Mode</h3>
+    <p>Dev mode is what you get when you run the source tree directly:</p>
+    <pre><code>python3 -m ofpm ...</code></pre>
+    <p>In dev mode:</p>
+    <ul>
+    <li>source root is the current checkout</li>
+    <li>repo config lives under:</li>
+    </ul>
+    <pre><code>&lt;checkout&gt;/config/repos.json</code></pre>
+    <h3>Installed Mode</h3>
+    <p>Installed mode is what you get when you run the installed launcher:</p>
+    <pre><code>~/.ofpm/bin/ofpm ...
+/opt/ofpm/bin/ofpm ...</code></pre>
+    <p>In installed mode:</p>
+    <ul>
+    <li>source root is copied into <code>&lt;managed-root&gt;/src</code></li>
+    <li>repo config lives under <code>&lt;managed-root&gt;/config/repos.json</code></li>
+    <li>an empty <code>&lt;managed-root&gt;/repos/main</code> is created as a default local repo location</li>
+    </ul>
+    </section>
+    <section>
+    <h2>3. install-ofpm Layout</h2>
+    <h3>User Install</h3>
+    <pre><code>python3 -m ofpm install-ofpm --root user</code></pre>
+    <p>This creates:</p>
+    <pre><code>~/.ofpm/
+|- bin/
+|  `- ofpm
+|- src/
+|  `- ofpm/...
+|- repos/
+|  `- main/
+`- config/
+   `- repos.json</code></pre>
+    <p>It also updates <code>~/.bashrc</code> with an <code>ofpm</code> block that:</p>
+    <ul>
+    <li>sets <code>OFPM_ROOT</code></li>
+    <li>prepends <code>~/.ofpm/bin</code> to <code>PATH</code></li>
+    </ul>
+    <h3>System Install</h3>
+    <pre><code>sudo python3 -m ofpm install-ofpm --root system</code></pre>
+    <p>This creates:</p>
+    <pre><code>/opt/ofpm/
+|- bin/
+|  `- ofpm
+|- src/
+|  `- ofpm/...
+|- repos/
+|  `- main/
+`- config/
+   `- repos.json</code></pre>
+    <p>It also writes:</p>
+    <ul>
+    <li><code>/etc/profile.d/ofpm.sh</code></li>
+    <li>a source block into <code>/etc/bash.bashrc</code> or <code>/etc/bashrc</code></li>
+    </ul>
+    <h3>reinstall-ofpm</h3>
+    <p><code>reinstall-ofpm</code> is the force-reinstall form:</p>
+    <pre><code>python3 -m ofpm reinstall-ofpm --root user
+sudo python3 -m ofpm reinstall-ofpm --root system</code></pre>
+    </section>
+    <section>
+    <h2>4. What install-ofpm Installs</h2>
+    <p><code>install-ofpm</code> does not copy the entire dev checkout.</p>
+    <p>It installs:</p>
+    <ul>
+    <li><code>&lt;managed-root&gt;/bin/ofpm</code></li>
+    <li><code>&lt;managed-root&gt;/src/ofpm/...</code></li>
+    <li><code>&lt;managed-root&gt;/repos/main</code></li>
+    <li><code>&lt;managed-root&gt;/config/repos.json</code></li>
+    </ul>
+    <p>It also updates shell startup files:</p>
+    <ul>
+    <li>user install: <code>~/.bashrc</code></li>
+    <li>system install: <code>/etc/profile.d/ofpm.sh</code></li>
+    <li>system install interactive bash: <code>/etc/bash.bashrc</code> or <code>/etc/bashrc</code></li>
+    </ul>
+    <p>It intentionally excludes:</p>
+    <ul>
+    <li><code>tests/</code></li>
+    <li><code>.ai/</code></li>
+    <li><code>docker/</code></li>
+    <li><code>repos/</code></li>
+    <li><code>config/</code></li>
+    <li>cache directories and <code>*.pyc</code>/<code>*.pyo</code></li>
+    </ul>
+    <p>The installed tree keeps the Python runtime and docs, then creates a fresh installed-side <code>repos/main</code> and <code>config/repos.json</code>.</p>
+    </section>
+    <section>
+    <h2>5. Repo Registration</h2>
+    <p><code>ofpm</code> uses registered repos only.</p>
+    <p>Register a repo like this:</p>
+    <pre><code>ofpm repo add main /some/path/to/repos/main</code></pre>
+    <p>List the current registrations:</p>
+    <pre><code>ofpm repo list</code></pre>
+    <p>The config file used depends on mode:</p>
+    <ul>
+    <li>dev mode: <code>&lt;checkout&gt;/config/repos.json</code></li>
+    <li>installed mode: <code>&lt;managed-root&gt;/config/repos.json</code></li>
+    </ul>
+    <p>You can also override selection per command:</p>
+    <ul>
+    <li><code>--repos-config &lt;path&gt;</code></li>
+    <li><code>--repo &lt;name&gt;</code></li>
+    <li><code>--repo-path &lt;path&gt;</code></li>
+    </ul>
+    <p>Resolution priority is:</p>
+    <ol>
+    <li><code>--repo-path</code></li>
+    <li><code>--repos-config</code> + optional <code>--repo</code></li>
+    <li>default mode-specific <code>config/repos.json</code></li>
+    </ol>
+    </section>
+    <section>
+    <h2>6. Native ofpm Package Flow</h2>
+    <p>The normal <code>ofpm</code> package flow is:</p>
+    <pre><code>ofpm list
+ofpm show &lt;package&gt;
+ofpm install &lt;package&gt;
+ofpm verify &lt;package&gt;
+ofpm remove &lt;package&gt;</code></pre>
+    <p>Installed payloads live under the managed root:</p>
+    <pre><code>&lt;managed-root&gt;/payloads/&lt;package&gt;/&lt;version&gt;/</code></pre>
+    <p>Current pointers live here:</p>
+    <pre><code>&lt;managed-root&gt;/payloads/&lt;package&gt;/current</code></pre>
+    <p>Public executables are exposed under:</p>
+    <pre><code>&lt;managed-root&gt;/bin</code></pre>
+    <p>So once the shell hook is active, <code>PATH</code> only needs the managed <code>bin/</code> directory.</p>
+    </section>
+    <section>
+    <h2>7. Local Package and Repo Import Flow</h2>
+    <p>There are two builder-side flows.</p>
+    <h3>Import a Local Project Path into a Repo</h3>
+    <pre><code>python3 -m ofpm repo import main \
+  --path /some/project/output \
+  --package demo \
+  --version 1.0.0</code></pre>
+    <p>This copies the local source path into:</p>
+    <pre><code>repos/main/ofpm/&lt;package&gt;/&lt;version&gt;/payload/</code></pre>
+    <p>and writes:</p>
+    <pre><code>repos/main/ofpm/&lt;package&gt;/&lt;version&gt;/package.py</code></pre>
+    <h3>Import an Existing package.py + payload/ Directory</h3>
+    <pre><code>python3 -m ofpm repo import-package main /some/packaging/ofpm</code></pre>
+    </section>
+    <section>
+    <h2>8. apt Helper Flow</h2>
+    <p><code>ofpm apt</code> is for:</p>
+    <ul>
+    <li>building a local apt repo</li>
+    <li>activating that repo for target use</li>
+    </ul>
+    <h3>Build Local Repo</h3>
+    <pre><code>ofpm apt build-repo zstd --output ./zstd-repo
+ofpm apt source-line ./zstd-repo</code></pre>
+    <p>This creates:</p>
+    <ul>
+    <li><code>pool/</code></li>
+    <li><code>Packages</code></li>
+    <li><code>Packages.gz</code></li>
+    </ul>
+    <p>inside <code>./zstd-repo/</code>.</p>
+    <h3>Activate on Target</h3>
+    <pre><code>sudo ofpm apt activate ./zstd-repo
+sudo apt install zstd
+sudo ofpm apt deactivate ./zstd-repo</code></pre>
+    <p>If a parent directory contains multiple built apt repos, you can register or remove them in one step:</p>
+    <pre><code>sudo ofpm apt activate /opt/ofpm/repos/main/apt --recursive
+sudo ofpm apt deactivate /opt/ofpm/repos/main/apt --recursive</code></pre>
+    </section>
+    <section>
+    <h2>9. dnf Helper Flow</h2>
+    <p><code>ofpm dnf</code>:</p>
+    <ul>
+    <li>build local rpm repo metadata</li>
+    <li>write a <code>.repo</code> file</li>
+    <li>let <code>dnf</code> do the real install</li>
+    </ul>
+    <p>Example:</p>
+    <pre><code>ofpm dnf build-repo offline-main /some/rpm/repo
+sudo ofpm dnf activate offline-main /some/rpm/repo
+sudo dnf install zstd</code></pre>
+    </section>
+    <section>
+    <h2>10. Recommended Practical Workflow</h2>
+    <h3>Development</h3>
+    <pre><code>python3 -m ofpm ...</code></pre>
+    <p>Use:</p>
+    <ul>
+    <li>checkout-local <code>config/repos.json</code></li>
+    <li>test fixture repos</li>
+    <li>builder-side commands</li>
+    </ul>
+    <h3>Personal Installed Usage</h3>
+    <pre><code>python3 -m ofpm install-ofpm --root user
+source ~/.bashrc
+ofpm repo add main /path/to/my/repo
+ofpm list</code></pre>
+    <h3>System Installed Usage</h3>
+    <pre><code>sudo python3 -m ofpm install-ofpm --root system
+sudo ofpm repo add main /opt/ofpm/repos/main
+ofpm list</code></pre>
+    <h3>Provider Offline Helper Usage</h3>
+    <pre><code>ofpm apt build-repo zstd --output ./zstd-repo
+sudo ofpm apt activate ./zstd-repo
+sudo apt install zstd</code></pre>
+    <ul>
+    <li><code>ofpm</code> prepares offline repo state</li>
+    <li>native package managers perform provider installs</li>
+    </ul>
+    </section>
+  </main>
+</body>
+</html>

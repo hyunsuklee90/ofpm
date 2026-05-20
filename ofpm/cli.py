@@ -14,16 +14,15 @@ from ofpm.apt import (
     apt_repo_access_issue,
     apt_artifact_root,
     apt_source_line,
-    build_apt_local_repo,
+    build_apt_local_repo_from_root,
     apt_dependency_names,
     apt_download_package,
     apt_package_manifest_path,
     apt_policy_version,
     apt_show_metadata,
     detect_apt_context,
-    find_apt_package_manifest,
+    find_apt_local_repo_roots,
     list_apt_packages,
-    resolve_built_apt_local_repo_root,
     safe_path_component,
 )
 from ofpm.package_def import dump_package_file, load_package_file
@@ -47,7 +46,6 @@ from ofpm.local_package import (
 from ofpm.modules import render_package_modulefile, render_package_shell_env
 from ofpm.plugins import attach_plugin, detach_plugin, list_attached_plugins, refresh_plugins
 from ofpm.repo_data import (
-    dump_json,
     find_installed_state,
     installed_states,
     list_available_packages,
@@ -58,7 +56,6 @@ from ofpm.repo_data import (
     repo_repos_config_path,
     registered_repos,
     save_repos_config,
-    user_repos_config_path,
     verify_package_sources,
 )
 from ofpm.runtime_support import remove_managed_payload, verify_managed_files_install
@@ -72,30 +69,80 @@ from ofpm.state_db import (
 
 
 def repo_root() -> Path:
+    configured = os.environ.get("OFPM_SOURCE_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
     return Path(__file__).resolve().parents[1]
 
 
-def default_repo_path(root: Path | None = None) -> Path:
+def managed_source_root(root_kind: str) -> Path:
+    return managed_root(root_kind) / "src"
+
+
+def install_home_root(root_kind: str, launcher_path: Path) -> Path:
+    if launcher_path.parent.name == "bin":
+        return launcher_path.parent.parent
+    return managed_root(root_kind)
+
+
+def selected_repos_config_path(args: argparse.Namespace | None = None, root: Path | None = None) -> Path:
+    raw = getattr(args, "repos_config", None) if args is not None else None
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return repo_repos_config_path(root or repo_root())
+
+
+def configured_repos(args: argparse.Namespace | None = None, root: Path | None = None) -> dict[str, str]:
     base = root or repo_root()
-    return base / "repos" / "main"
+    config_path = selected_repos_config_path(args, base)
+    return registered_repos(base, config_path)
 
 
-def effective_registered_repos(root: Path | None = None) -> dict[str, str]:
-    base = root or repo_root()
-    repos = registered_repos(base)
-    if repos:
-        return repos
-    return {"main": str(default_repo_path(base))}
+def selected_repo_entries(
+    args: argparse.Namespace | None = None,
+    root: Path | None = None,
+) -> list[tuple[str, Path]]:
+    direct_path = getattr(args, "repo_path", None) if args is not None else None
+    if direct_path:
+        return [("<direct>", Path(direct_path).expanduser().resolve())]
+
+    repos = configured_repos(args, root)
+    selected_repo = getattr(args, "repo", None) if args is not None else None
+    if selected_repo:
+        repo_id = selected_repo.strip().lower()
+        if repo_id not in repos:
+            config_path = selected_repos_config_path(args, root)
+            raise ValueError(f"repo not found in {config_path}: {repo_id}")
+        return [(repo_id, Path(repos[repo_id]).expanduser().resolve())]
+
+    return [
+        (repo_id, Path(repo_path).expanduser().resolve())
+        for repo_id, repo_path in sorted(repos.items())
+    ]
 
 
-def primary_repo_path(root: Path | None = None) -> Path:
-    base = root or repo_root()
-    repos = effective_registered_repos(base)
-    preferred = repos.get("main")
-    if preferred:
-        return Path(preferred).expanduser().resolve()
-    first_repo = next(iter(sorted(repos.items())))[1]
-    return Path(first_repo).expanduser().resolve()
+def primary_repo_path(args: argparse.Namespace | None = None, root: Path | None = None) -> Path:
+    entries = selected_repo_entries(args, root)
+    if entries:
+        if len(entries) == 1:
+            return entries[0][1]
+
+        direct_selection = getattr(args, "repo", None) if args is not None else None
+        if direct_selection:
+            return entries[0][1]
+
+        repos = dict(entries)
+        preferred = repos.get("main")
+        if preferred is not None:
+            return preferred
+        config_path = selected_repos_config_path(args, root)
+        raise ValueError(
+            f"multiple repos are registered in {config_path}; "
+            "use `--repo <name>` or `--repo-path <path>`"
+        )
+
+    config_path = selected_repos_config_path(args, root)
+    raise ValueError(f"no registered repos in {config_path}; use `ofpm repo add <name> <path>` first")
 
 
 def managed_root(root_kind: str) -> Path:
@@ -193,34 +240,32 @@ def effective_artifact_roots() -> dict[str, str]:
     return load_artifact_roots(repo_root())
 
 
-def sources_config_path(root: Path | None = None) -> Path:
-    base = root or repo_root()
-    return base / "local" / "sources.json"
-
-
-def stored_sources(root: Path | None = None) -> dict[str, dict[str, str]]:
-    path = sources_config_path(root)
-    if not path.exists():
-        return {}
-    return load_json(path)
-
-
-def save_sources_config(path: Path, sources: dict[str, dict[str, str]]) -> None:
-    dump_json(path, dict(sorted(sources.items())))
-
-
-def launcher_script_text(*, python_executable: str, source_root: Path) -> str:
+def launcher_script_text(
+    *,
+    python_executable: str,
+    source_root: Path,
+    mode: str = "dev",
+    ofpm_home: Path | None = None,
+) -> str:
     quoted_python = python_executable.replace('"', '\\"')
     quoted_root = str(source_root).replace('"', '\\"')
-    return "\n".join(
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        f'export OFPM_MODE="{mode}"',
+        f'export OFPM_SOURCE_ROOT="{quoted_root}"',
+        f'export PYTHONPATH="{quoted_root}${{PYTHONPATH:+:$PYTHONPATH}}"',
+    ]
+    if ofpm_home is not None:
+        quoted_home = str(ofpm_home).replace('"', '\\"')
+        lines.append(f'export OFPM_HOME="{quoted_home}"')
+    lines.extend(
         [
-            "#!/usr/bin/env bash",
-            "set -euo pipefail",
-            f'export PYTHONPATH="{quoted_root}${{PYTHONPATH:+:$PYTHONPATH}}"',
             f'exec "{quoted_python}" -m ofpm "$@"',
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def default_ofpm_launcher_path(root_kind: str) -> Path:
@@ -251,7 +296,7 @@ def default_ofpm_symlink_path(root_kind: str) -> Path | None:
 
 
 def ofpm_profile_script_text(*, root_kind: str, launcher_path: Path) -> str:
-    managed = launcher_path.parent.parent if launcher_path.parent.name == "bin" else managed_root(root_kind)
+    managed = install_home_root(root_kind, launcher_path)
     launcher_dir = launcher_path.parent
     return "\n".join(
         [
@@ -325,8 +370,63 @@ def _write_symlink(path: Path, target: Path, *, force: bool) -> None:
     path.symlink_to(target)
 
 
-def resolve_registered_repo_path(repo_id: str, root: Path | None = None) -> Path:
-    repos = effective_registered_repos(root or repo_root())
+def _install_ofpm_source_tree(source_root: Path, target_root: Path, *, force: bool) -> None:
+    if source_root == target_root:
+        return
+    if target_root.exists():
+        if not force:
+            raise FileExistsError(str(target_root))
+        shutil.rmtree(target_root)
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    excluded_names = {
+        ".git",
+        ".ai",
+        "__pycache__",
+        ".pytest_cache",
+        "docker",
+        "scripts",
+        "tests",
+        "repos",
+        "config",
+    }
+    included_files = {
+        "README.md",
+    }
+
+    def ignore_copy(_directory: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        for name in names:
+            if name in {"__pycache__", ".pytest_cache"}:
+                ignored.add(name)
+                continue
+            if name.endswith(".pyc") or name.endswith(".pyo"):
+                ignored.add(name)
+        return ignored
+
+    for child in sorted(source_root.iterdir(), key=lambda item: item.name):
+        if child.name in excluded_names:
+            continue
+        destination = target_root / child.name
+        if child.is_dir():
+            shutil.copytree(child, destination, ignore=ignore_copy)
+            continue
+        if child.is_file() and child.name in included_files:
+            shutil.copy2(child, destination)
+
+
+def default_installed_repos(managed_home: Path) -> dict[str, str]:
+    return {
+        "main": str((managed_home / "repos" / "main").resolve()),
+    }
+
+
+def resolve_registered_repo_path(
+    repo_id: str,
+    args: argparse.Namespace | None = None,
+    root: Path | None = None,
+) -> Path:
+    repos = configured_repos(args, root or repo_root())
     if repo_id not in repos:
         raise ValueError(f"repo not found: {repo_id}")
     return Path(repos[repo_id]).expanduser().resolve()
@@ -374,7 +474,7 @@ def build_target_from_profile(profile_id: str) -> dict[str, str]:
 
 
 def build_source_package_manifest(
-    source_name: str,
+    source_label: str,
     source_path: Path,
     artifact_root: Path,
     manifest_root: Path,
@@ -388,7 +488,7 @@ def build_source_package_manifest(
     metadata = {
         "description": description,
         "source_kind": "repo-internal",
-        "source_name": source_name,
+        "source_name": source_label,
         "origin_path": str(source_path),
         "origin_relroot": relpath_posix(artifact_root, manifest_root),
     }
@@ -427,8 +527,7 @@ def build_source_package_manifest(
 
 def import_local_source_package(
     repo_path: Path,
-    source_name: str,
-    source_record: dict[str, str],
+    source_path: Path,
     *,
     package_id: str,
     version: str,
@@ -436,7 +535,9 @@ def import_local_source_package(
     install_root: str,
     description: str,
 ) -> tuple[Path, Path]:
-    source_path = Path(source_record["path"]).expanduser().resolve()
+    source_path = source_path.expanduser().resolve()
+    source_kind = detect_source_kind(source_path)
+    source_label = source_path.name
     manifest_root = repo_path / "ofpm" / package_id / version
     manifest_path = manifest_root / "package.py"
     artifact_root = manifest_root / "payload"
@@ -445,14 +546,14 @@ def import_local_source_package(
     if artifact_root.exists():
         raise ValueError(f"package payload root already exists: {artifact_root}")
 
-    if source_record["kind"] == "dir":
+    if source_kind == "dir":
         shutil.copytree(source_path, artifact_root, dirs_exist_ok=False)
     else:
         artifact_root.mkdir(parents=True, exist_ok=False)
         shutil.copy2(source_path, artifact_root / source_path.name)
 
     manifest = build_source_package_manifest(
-        source_name,
+        source_label,
         source_path,
         artifact_root,
         manifest_root,
@@ -466,64 +567,11 @@ def import_local_source_package(
     return manifest_path, artifact_root
 
 
-def build_apt_package_manifest(
-    repo_path: Path,
-    provider_manifest_path: Path,
-    snapshot: dict[str, Any],
-    *,
-    package_id: str,
-    profile_id: str,
-    install_root: str,
-    description: str,
-) -> dict[str, Any]:
-    manifest_root = repo_path / "ofpm" / package_id / snapshot["package_version"]
-    artifact_root = resolve_repo_data_path(repo_path, snapshot["artifact_root"])
-    files: list[dict[str, Any]] = []
-    metadata_package_path = artifact_root / "metadata" / "package.py"
-    files.append(
-        {
-            "source": relpath_posix(metadata_package_path, manifest_root),
-            "target": "metadata/package.py",
-            "mode": "0644",
-        }
-    )
-    for package in snapshot.get("packages", []):
-        package_path = resolve_repo_data_path(repo_path, str(package["path"]))
-        files.append(
-            {
-                "source": relpath_posix(package_path, manifest_root),
-                "target": f"pool/{package['filename']}",
-                "mode": "0644",
-            }
-        )
-    return {
-        "schema_version": "1",
-        "package_id": package_id,
-        "version": snapshot["package_version"],
-        "target": build_target_from_profile(profile_id),
-        "install_root": install_root,
-        "depends": [],
-        "plugins": [],
-        "plugin_data": [],
-        "metadata": {
-            "description": description,
-            "source_kind": "provider-apt",
-            "provider": "apt",
-            "provider_manifest": str(provider_manifest_path),
-            "artifact_root": str(artifact_root),
-        },
-        "files": files,
-    }
-
-
-def available_packages_with_repo() -> list[dict[str, object]]:
+def available_packages_with_repo(args: argparse.Namespace | None = None) -> list[dict[str, object]]:
     root = repo_root()
     artifact_roots = effective_artifact_roots()
-    repos = effective_registered_repos(root)
-
     packages: list[dict[str, object]] = []
-    for repo_id, repo_path_raw in sorted(repos.items()):
-        repo_path = Path(repo_path_raw).expanduser().resolve()
+    for repo_id, repo_path in selected_repo_entries(args, root):
         package_base = repo_path if (repo_path / "ofpm").exists() else repo_path / "catalog"
         if not package_base.exists():
             continue
@@ -542,12 +590,10 @@ def available_packages_with_repo() -> list[dict[str, object]]:
     )
 
 
-def package_manifests_with_repo() -> list[dict[str, str]]:
+def package_manifests_with_repo(args: argparse.Namespace | None = None) -> list[dict[str, str]]:
     root = repo_root()
-    repos = effective_registered_repos(root)
     manifests: list[dict[str, str]] = []
-    for repo_id, repo_path_raw in sorted(repos.items()):
-        repo_path = Path(repo_path_raw).expanduser().resolve()
+    for repo_id, repo_path in selected_repo_entries(args, root):
         package_root = repo_path / "ofpm"
         if not package_root.exists():
             package_root = repo_path / "catalog" / "packages"
@@ -565,10 +611,14 @@ def package_manifests_with_repo() -> list[dict[str, str]]:
     return manifests
 
 
-def find_registered_package_manifest(package_id: str, version: str | None = None) -> dict[str, str] | None:
+def find_registered_package_matches(
+    args: argparse.Namespace | None,
+    package_id: str,
+    version: str | None = None,
+) -> list[dict[str, str]]:
     matches: list[dict[str, str]] = []
     allowed_ids = set(equivalent_package_ids(package_id))
-    for entry in package_manifests_with_repo():
+    for entry in package_manifests_with_repo(args):
         manifest_path = Path(entry["manifest"])
         data = load_package_file(manifest_path)
         if data["package_id"] not in allowed_ids:
@@ -583,8 +633,25 @@ def find_registered_package_manifest(package_id: str, version: str | None = None
                 "version": data["version"],
             }
         )
+    return sorted(matches, key=lambda item: (item["repo_id"], item["version"]))
+
+
+def find_registered_package_manifest(
+    args: argparse.Namespace | None,
+    package_id: str,
+    version: str | None = None,
+) -> dict[str, str] | None:
+    matches = find_registered_package_matches(args, package_id, version)
     if not matches:
         return None
+
+    repo_ids = sorted({item["repo_id"] for item in matches})
+    if len(repo_ids) > 1:
+        rendered = ", ".join(repo_ids)
+        raise ValueError(
+            f"package is available from multiple repos: {package_id} "
+            f"(repos: {rendered}); use `--repo <name>` or `--repo-path <path>`"
+        )
     return sorted(matches, key=lambda item: item["version"])[-1]
 
 
@@ -599,19 +666,17 @@ def resolve_registered_package_specs(package_specs: list[str]) -> list[tuple[str
             package_id, version = spec.split("@", 1)
         else:
             package_id, version = spec, None
-        manifest_entry = find_registered_package_manifest(package_id, version)
+        manifest_entry = find_registered_package_manifest(None, package_id, version)
         if manifest_entry is None:
             raise ValueError(f"package not found: {spec}")
         resolved.append((spec, manifest_entry))
     return resolved
 
 
-def apt_snapshots_with_repo() -> list[dict[str, object]]:
+def apt_snapshots_with_repo(args: argparse.Namespace | None = None) -> list[dict[str, object]]:
     root = repo_root()
-    repos = effective_registered_repos(root)
     snapshots: list[dict[str, object]] = []
-    for repo_id, repo_path_raw in sorted(repos.items()):
-        repo_path = Path(repo_path_raw).expanduser().resolve()
+    for repo_id, repo_path in selected_repo_entries(args, root):
         for item in list_apt_packages(repo_path):
             snapshot = dict(item)
             snapshot["repo_id"] = repo_id
@@ -625,6 +690,40 @@ def apt_snapshots_with_repo() -> list[dict[str, object]]:
             str(item["repo_id"]),
         ),
     )
+
+
+def find_apt_snapshot_matches(
+    args: argparse.Namespace | None,
+    package_name: str,
+    version: str | None = None,
+) -> list[dict[str, object]]:
+    matches: list[dict[str, object]] = []
+    for item in apt_snapshots_with_repo(args):
+        if str(item["package_name"]) != package_name:
+            continue
+        if version is not None and str(item["package_version"]) != version:
+            continue
+        matches.append(item)
+    return sorted(matches, key=lambda item: (str(item["repo_id"]), str(item["package_version"])))
+
+
+def find_apt_snapshot(
+    args: argparse.Namespace | None,
+    package_name: str,
+    version: str | None = None,
+) -> dict[str, object] | None:
+    matches = find_apt_snapshot_matches(args, package_name, version)
+    if not matches:
+        return None
+
+    repo_ids = sorted({str(item["repo_id"]) for item in matches})
+    if len(repo_ids) > 1:
+        rendered = ", ".join(repo_ids)
+        raise ValueError(
+            f"apt package snapshot is available from multiple repos: {package_name} "
+            f"(repos: {rendered}); use `--repo <name>` or `--repo-path <path>`"
+        )
+    return sorted(matches, key=lambda item: str(item["package_version"]))[-1]
 
 
 def offline_strict_enabled() -> bool:
@@ -690,7 +789,11 @@ def cmd_list(args: argparse.Namespace) -> int:
                 print(f"   origin: {item['bundle_id']} ({item['bundle_type']})")
         return 0
 
-    available = available_packages_with_repo()
+    try:
+        available = available_packages_with_repo(args)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if not args.all:
         available = [item for item in available if item.get("available", True)]
     if args.pattern:
@@ -733,16 +836,49 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_show(args: argparse.Namespace) -> int:
     artifact_roots = effective_artifact_roots()
-    manifest_entry = find_registered_package_manifest(args.package, args.version)
-    if manifest_entry is None:
+    try:
+        matches = find_registered_package_matches(args, args.package, args.version)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    if not matches:
         print(f"package not found: {args.package}")
         return 1
+    if len({entry["repo_id"] for entry in matches}) > 1 and not getattr(args, "repo", None) and not getattr(args, "repo_path", None):
+        if args.json:
+            packages = [
+                package_summary_from_manifest(
+                    Path(entry["manifest"]),
+                    include_files=args.files,
+                    artifact_roots=artifact_roots,
+                )
+                | {"repo_id": entry["repo_id"], "repo_path": entry["repo_path"]}
+                for entry in matches
+            ]
+            print_json({"packages": packages})
+            return 0
+        print(f"matching packages for: {args.package}")
+        for entry in matches:
+            manifest_path = Path(entry["manifest"])
+            package = package_summary_from_manifest(
+                manifest_path,
+                include_files=False,
+                artifact_roots=artifact_roots,
+            )
+            print(
+                " - "
+                f"{package['package_id']} {package['version']} "
+                f"[repo={entry['repo_id']}] "
+                f"[profile={package['profile_id']}] "
+                f"[available={'yes' if package['available'] else 'no'}]"
+            )
+            print(f"   manifest: {entry['manifest']}")
+        print("use `--repo <name>` or `--repo-path <path>` for a single detailed package view")
+        return 0
+
+    manifest_entry = sorted(matches, key=lambda item: item["version"])[-1]
     manifest_path = Path(manifest_entry["manifest"])
-    package = package_summary_from_manifest(
-        manifest_path,
-        include_files=args.files,
-        artifact_roots=artifact_roots,
-    )
+    package = package_summary_from_manifest(manifest_path, include_files=args.files, artifact_roots=artifact_roots)
     installed = find_installed_state(managed_state_root(effective_managed_root(args)), package["package_id"])
 
     if args.json:
@@ -811,7 +947,11 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 def cmd_verify_source(args: argparse.Namespace) -> int:
-    manifest_entry = find_registered_package_manifest(args.package, args.version)
+    try:
+        manifest_entry = find_registered_package_manifest(args, args.package, args.version)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if manifest_entry is None:
         print(f"package not found: {args.package}")
         return 1
@@ -923,7 +1063,7 @@ def cmd_package_init(args: argparse.Namespace) -> int:
 def cmd_repo_import_package(args: argparse.Namespace) -> int:
     repo_id = args.repo_id.strip().lower()
     try:
-        repo_path = resolve_registered_repo_path(repo_id)
+        repo_path = resolve_registered_repo_path(repo_id, args)
         check = verify_local_package(args.path)
     except ValueError as exc:
         print(str(exc))
@@ -955,7 +1095,11 @@ def cmd_repo_import_package(args: argparse.Namespace) -> int:
 def cmd_install(args: argparse.Namespace) -> int:
     require_offline_target_mode("install")
     artifact_roots = effective_artifact_roots()
-    manifest_entry = find_registered_package_manifest(args.package, args.version)
+    try:
+        manifest_entry = find_registered_package_manifest(args, args.package, args.version)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if manifest_entry is None:
         print(f"package not found: {args.package}")
         return 1
@@ -1009,8 +1153,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     return 0
 
 
-def remove_installed_package(managed: Path, installed: dict[str, Any]) -> dict[str, Any] | None:
-    manifest_entry = find_registered_package_manifest(installed["package_id"], installed["package_version"])
+def remove_installed_package(
+    managed: Path,
+    installed: dict[str, Any],
+    args: argparse.Namespace | None = None,
+) -> dict[str, Any] | None:
+    manifest_entry = find_registered_package_manifest(args, installed["package_id"], installed["package_version"])
     if manifest_entry is not None:
         manifest_path = Path(manifest_entry["manifest"])
         package_data = load_package_file(manifest_path)
@@ -1055,7 +1203,11 @@ def cleanup_stale_install_paths(managed: Path, package_data: dict[str, Any]) -> 
 def cmd_reinstall(args: argparse.Namespace) -> int:
     require_offline_target_mode("reinstall")
     artifact_roots = effective_artifact_roots()
-    manifest_entry = find_registered_package_manifest(args.package, args.version)
+    try:
+        manifest_entry = find_registered_package_manifest(args, args.package, args.version)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if manifest_entry is None:
         print(f"package not found: {args.package}")
         return 1
@@ -1073,7 +1225,7 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         print(f" - existing version: {installed['package_version']}")
         print(f" - existing state: {installed['state_path']}")
         print(" - action: remove existing install before fresh install")
-        result = remove_installed_package(managed, installed)
+        result = remove_installed_package(managed, installed, args)
         if result is not None:
             print(f"removed package: {result['package_id']} {result['package_version']}")
             print(f" - managed root: {result['managed_root']}")
@@ -1128,7 +1280,11 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     require_offline_target_mode("upgrade")
     resolved = resolve_installed_state_for_action(args, args.package)
     installed = resolved[1] if resolved is not None else None
-    manifest_entry = find_registered_package_manifest(args.package, args.version)
+    try:
+        manifest_entry = find_registered_package_manifest(args, args.package, args.version)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if manifest_entry is None:
         print(f"package not found: {args.package}")
         return 1
@@ -1156,7 +1312,7 @@ def cmd_remove(args: argparse.Namespace) -> int:
             print(f"package not installed: {args.package}")
         return 1
     managed, installed = resolved
-    result = remove_installed_package(managed, installed)
+    result = remove_installed_package(managed, installed, args)
     if result is not None:
         print(f"removed package: {result['package_id']} {result['package_version']}")
         print(f" - managed root: {result['managed_root']}")
@@ -1180,7 +1336,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"package not installed: {args.package}")
         return 1
     managed, installed = resolved
-    manifest_entry = find_registered_package_manifest(installed["package_id"], installed["package_version"])
+    try:
+        manifest_entry = find_registered_package_manifest(args, installed["package_id"], installed["package_version"])
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     if manifest_entry is not None:
         manifest_path = Path(manifest_entry["manifest"])
         package_data = load_package_file(manifest_path)
@@ -1408,122 +1568,16 @@ def cmd_plugin_refresh(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_source_list(args: argparse.Namespace) -> int:
-    sources = stored_sources()
-    if args.json:
-        print_json({"config_path": str(sources_config_path()), "sources": sources})
-        return 0
-    if not sources:
-        print(f"no registered sources in {sources_config_path()}")
-        return 0
-    print(f"source config: {sources_config_path()}")
-    print("registered sources:")
-    for name, item in sorted(sources.items()):
-        print(f" - {name} [{item['kind']}] {item['path']}")
-    return 0
-
-
-def cmd_source_show(args: argparse.Namespace) -> int:
-    sources = stored_sources()
-    name = args.source_name.strip().lower()
-    if name not in sources:
-        print(f"source not found: {name}")
-        return 1
-    item = sources[name]
-    path = Path(item["path"])
-    exists = path.exists()
-    file_count = source_file_count(path) if exists else 0
-    if args.json:
-        print_json(
-            {
-                "name": name,
-                "kind": item["kind"],
-                "path": item["path"],
-                "added_at": item.get("added_at", ""),
-                "exists": exists,
-                "file_count": file_count,
-            }
-        )
-        return 0
-    print(f"source: {name}")
-    print(f" - kind: {item['kind']}")
-    print(f" - path: {item['path']}")
-    print(f" - added at: {item.get('added_at', '')}")
-    print(f" - exists: {'yes' if exists else 'no'}")
-    print(f" - file count: {file_count}")
-    return 0 if exists else 1
-
-
-def cmd_source_add(args: argparse.Namespace) -> int:
-    path = Path(args.path).expanduser().resolve()
-    if not path.exists():
-        print(f"source path not found: {path}")
-        return 1
-    name = args.source_name.strip().lower()
-    sources = stored_sources()
-    sources[name] = {
-        "name": name,
-        "path": str(path),
-        "kind": detect_source_kind(path),
-        "added_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-    }
-    save_sources_config(sources_config_path(), sources)
-    print(f"registered source: {name}")
-    print(f" - kind: {sources[name]['kind']}")
-    print(f" - path: {path}")
-    print(f" - config: {sources_config_path()}")
-    return 0
-
-
-def cmd_source_remove(args: argparse.Namespace) -> int:
-    sources = stored_sources()
-    name = args.source_name.strip().lower()
-    if name not in sources:
-        print(f"source not found: {name}")
-        return 1
-    removed = sources.pop(name)
-    save_sources_config(sources_config_path(), sources)
-    print(f"removed source: {name}")
-    print(f" - path: {removed['path']}")
-    print(f" - config: {sources_config_path()}")
-    return 0
-
-
-def cmd_source_verify(args: argparse.Namespace) -> int:
-    sources = stored_sources()
-    name = args.source_name.strip().lower()
-    if name not in sources:
-        print(f"source not found: {name}")
-        return 1
-    item = sources[name]
-    path = Path(item["path"])
-    kind = item["kind"]
-    errors: list[str] = []
-    if not path.exists():
-        errors.append("path does not exist")
-    elif kind == "dir" and not path.is_dir():
-        errors.append("stored kind is dir but path is not a directory")
-    elif kind == "file" and not path.is_file():
-        errors.append("stored kind is file but path is not a file")
-    print(f"verify source: {name}")
-    print(f" - kind: {kind}")
-    print(f" - path: {path}")
-    print(f" - file count: {source_file_count(path) if path.exists() else 0}")
-    if errors:
-        print(" - result: failed")
-        for error in errors:
-            print(f"   {error}")
-        return 1
-    print(" - result: verified")
-    return 0
-
-
 def cmd_install_cli(args: argparse.Namespace) -> int:
     root_kind = args.root or default_root_kind()
     raw_output = args.output
     output_path = Path(raw_output).expanduser().resolve() if raw_output else default_ofpm_launcher_path(root_kind)
+    install_home = install_home_root(root_kind, output_path)
     python_executable = args.python or sys.executable
     source_root = Path(args.source_root).expanduser().resolve() if args.source_root else repo_root()
+    installed_source_root = install_home / "src"
+    installed_repo_root = install_home / "repos" / "main"
+    installed_repos_config = install_home / "config" / "repos.json"
     profile_path = Path(args.profile_path).expanduser().resolve() if args.profile_path else default_ofpm_profile_path(root_kind)
     bashrc_path = Path(args.bashrc_path).expanduser().resolve() if args.bashrc_path else (
         default_ofpm_system_bashrc_path() if root_kind == "system" else None
@@ -1532,13 +1586,18 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
 
     content = launcher_script_text(
         python_executable=python_executable,
-        source_root=source_root,
+        source_root=installed_source_root,
+        mode="installed",
+        ofpm_home=install_home,
     )
     try:
         if output_path.exists() and output_path.is_dir():
             print(f"launcher path is a directory: {output_path}")
             print("choose a file path, for example: install-ofpm /opt/ofpm/bin/ofpm")
             return 1
+        _install_ofpm_source_tree(source_root, installed_source_root, force=args.force)
+        installed_repo_root.mkdir(parents=True, exist_ok=True)
+        save_repos_config(installed_repos_config, default_installed_repos(install_home))
         _write_text_file(output_path, content, force=args.force)
         os.chmod(output_path, 0o755)
 
@@ -1579,6 +1638,9 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
     print("closest existing model: this behaves more like `make install` than `apt install`")
     print(f" - root kind: {root_kind}")
     print(f" - output: {output_path}")
+    print(f" - installed source root: {installed_source_root}")
+    print(f" - installed repo root: {installed_repo_root}")
+    print(f" - repo config: {installed_repos_config}")
     if profile_path and not args.no_profile:
         print(f" - shell hook: {profile_path}")
     else:
@@ -1595,31 +1657,28 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
     return 0
 
 
-def repo_config_path(args: argparse.Namespace) -> Path:
-    if args.scope == "user":
-        return user_repos_config_path()
-    if args.scope == "repo":
-        return repo_repos_config_path(repo_root())
-    raise ValueError(f"unsupported repo scope: {args.scope}")
+def cmd_reinstall_cli(args: argparse.Namespace) -> int:
+    reinstall_args = argparse.Namespace(**vars(args))
+    reinstall_args.force = True
+    return cmd_install_cli(reinstall_args)
 
 
 def stored_repos(args: argparse.Namespace) -> dict[str, str]:
-    path = repo_config_path(args)
+    path = selected_repos_config_path(args)
     if not path.exists():
         return {}
     return load_json(path)
 
 
 def cmd_repo_list(args: argparse.Namespace) -> int:
-    path = repo_config_path(args)
+    path = selected_repos_config_path(args)
     repos = stored_repos(args)
     if args.json:
-        print_json({"scope": args.scope, "config_path": str(path), "repos": repos})
+        print_json({"config_path": str(path), "repos": repos})
         return 0
     if not repos:
         print(f"no registered repos in {path}")
         return 0
-    print(f"repo scope: {args.scope}")
     print(f"config path: {path}")
     print("registered repos:")
     for repo_id, repo_path in sorted(repos.items()):
@@ -1628,7 +1687,7 @@ def cmd_repo_list(args: argparse.Namespace) -> int:
 
 
 def cmd_repo_add(args: argparse.Namespace) -> int:
-    path = repo_config_path(args)
+    path = selected_repos_config_path(args)
     repos = stored_repos(args)
     repo_id = args.repo_id.strip().lower()
     repo_path = str(Path(args.path).expanduser().resolve())
@@ -1636,41 +1695,36 @@ def cmd_repo_add(args: argparse.Namespace) -> int:
     save_repos_config(path, repos)
     print(f"registered repo: {repo_id}")
     print(f" - path: {repo_path}")
-    print(f" - scope: {args.scope}")
     print(f" - config: {path}")
     return 0
 
 
 def cmd_repo_remove(args: argparse.Namespace) -> int:
-    path = repo_config_path(args)
+    path = selected_repos_config_path(args)
     repos = stored_repos(args)
     repo_id = args.repo_id.strip().lower()
     if repo_id not in repos:
         print(f"repo not found: {repo_id}")
-        print(f" - scope: {args.scope}")
         print(f" - config: {path}")
         return 1
     removed_path = repos.pop(repo_id)
     save_repos_config(path, repos)
     print(f"removed repo: {repo_id}")
     print(f" - path: {removed_path}")
-    print(f" - scope: {args.scope}")
     print(f" - config: {path}")
     return 0
 
 
 def cmd_repo_show(args: argparse.Namespace) -> int:
-    path = repo_config_path(args)
+    path = selected_repos_config_path(args)
     repos = stored_repos(args)
     repo_id = args.repo_id.strip().lower()
     if repo_id not in repos:
         print(f"repo not found: {repo_id}")
-        print(f" - scope: {args.scope}")
         print(f" - config: {path}")
         return 1
     print(f"repo: {repo_id}")
     print(f" - path: {repos[repo_id]}")
-    print(f" - scope: {args.scope}")
     print(f" - config: {path}")
     return 0
 
@@ -1678,18 +1732,12 @@ def cmd_repo_show(args: argparse.Namespace) -> int:
 def cmd_repo_import(args: argparse.Namespace) -> int:
     repo_id = args.repo_id.strip().lower()
     try:
-        repo_path = resolve_registered_repo_path(repo_id)
+        repo_path = resolve_registered_repo_path(repo_id, args)
     except ValueError as exc:
         print(str(exc))
         return 1
 
-    sources = stored_sources()
-    source_name = args.source.strip().lower()
-    if source_name not in sources:
-        print(f"source not found: {source_name}")
-        return 1
-    source_record = sources[source_name]
-    source_path = Path(source_record["path"]).expanduser().resolve()
+    source_path = Path(args.path).expanduser().resolve()
     if not source_path.exists():
         print(f"source path not found: {source_path}")
         return 1
@@ -1698,12 +1746,11 @@ def cmd_repo_import(args: argparse.Namespace) -> int:
     version = args.version
     profile_id = args.profile
     install_root = args.install_root or f"payloads/{package_id}/{version}"
-    description = args.description or f"imported from source {source_name}"
+    description = args.description or f"imported from source path {source_path.name}"
     try:
         manifest_path, artifact_root = import_local_source_package(
             repo_path,
-            source_name,
-            source_record,
+            source_path,
             package_id=package_id,
             version=version,
             profile_id=profile_id,
@@ -1714,7 +1761,7 @@ def cmd_repo_import(args: argparse.Namespace) -> int:
         print(str(exc))
         return 1
 
-    print(f"imported source into repo: {source_name}")
+    print(f"imported source into repo: {source_path.name}")
     print(f" - repo: {repo_id}")
     print(f" - repo path: {repo_path}")
     print(f" - package: {package_id}")
@@ -1737,149 +1784,129 @@ def effective_apt_context(args: argparse.Namespace) -> dict[str, str]:
 
 
 def cmd_apt_list(args: argparse.Namespace) -> int:
-    if args.downloaded:
-        packages = apt_snapshots_with_repo()
-        if args.pattern:
-            packages = [
-                item
-                for item in packages
-                if args.pattern.lower() in item["package_name"].lower()
-            ]
-        if args.json:
-            print_json({"packages": packages})
-            return 0
-        if not packages:
-            print("no downloaded apt packages recorded in this repo")
-            return 0
-        print("downloaded apt package snapshots:")
-        for package in packages:
-            print(
-                " - "
-                f"{package['package_name']} {package['package_version']} "
-                f"[repo={package['repo_id']}] "
-                f"[{package['distro']} {package['release']} {package['arch']}] "
-                f"[packages={package['package_count']}] "
-                f"[deps={'yes' if package['with_deps'] else 'no'}]"
-            )
-            if args.verbose:
-                print(f"   repo path: {package['repo_path']}")
-                print(f"   payload root: {package['artifact_root']}")
-                print(f"   manifest: {package['manifest']}")
+    try:
+        packages = apt_snapshots_with_repo(args)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    if args.pattern:
+        packages = [
+            item
+            for item in packages
+            if args.pattern.lower() in item["package_name"].lower()
+        ]
+    if args.json:
+        print_json({"packages": packages})
         return 0
-
-    command = ["apt", "list"]
-    if args.installed:
-        command.append("--installed")
-    command.append(args.pattern or "*")
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.stderr and not args.json:
-        print(result.stderr.rstrip())
-    return result.returncode
+    if not packages:
+        print("no downloaded apt packages recorded in configured repos")
+        return 0
+    print("downloaded apt package snapshots:")
+    for package in packages:
+        print(
+            " - "
+            f"{package['package_name']} {package['package_version']} "
+            f"[repo={package['repo_id']}] "
+            f"[{package['distro']} {package['release']} {package['arch']}] "
+            f"[packages={package['package_count']}] "
+            f"[deps={'yes' if package['with_deps'] else 'no'}]"
+        )
+        if args.verbose:
+            print(f"   repo path: {package['repo_path']}")
+            print(f"   payload root: {package['artifact_root']}")
+            print(f"   manifest: {package['manifest']}")
+    return 0
 
 
 def cmd_apt_show(args: argparse.Namespace) -> int:
-    if args.downloaded:
-        manifest_path = None
-        repo_id = ""
-        repo_path = ""
-        for registered in apt_snapshots_with_repo():
-            if registered["package_name"] != args.package:
-                continue
-            if args.version is not None and registered["package_version"] != args.version:
-                continue
-            manifest_path = Path(str(registered["manifest"]))
-            repo_id = str(registered["repo_id"])
-            repo_path = str(registered["repo_path"])
-            break
-        if manifest_path is None:
-            print(f"apt package snapshot not found: {args.package}")
-            return 1
-        data = load_package_file(manifest_path)
+    try:
+        matches = find_apt_snapshot_matches(args, args.package, args.version)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    if not matches:
+        print(f"apt package snapshot not found: {args.package}")
+        return 1
+    if len({str(item['repo_id']) for item in matches}) > 1 and not getattr(args, "repo", None) and not getattr(args, "repo_path", None):
         if args.json:
-            print_json(data)
+            print_json({"packages": matches})
             return 0
-        context = data["context"]
-        print(f"apt package snapshot: {data['package_name']}")
-        print(f" - version: {data['package_version']}")
-        print(f" - distro: {context['distro']}")
-        print(f" - release: {context['release']}")
-        print(f" - arch: {context['arch']}")
-        print(f" - requested package: {data['requested_package']}")
-        print(f" - include dependencies: {'yes' if data.get('with_deps') else 'no'}")
-        print(f" - repo: {repo_id}")
-        print(f" - repo path: {repo_path}")
-        print(f" - payload root: {data['artifact_root']}")
-        print(f" - manifest: {manifest_path}")
-        print(f" - downloaded packages: {len(data.get('packages', []))}")
-        for package in data.get("packages", []):
+        print(f"matching apt package snapshots for: {args.package}")
+        for item in matches:
             print(
-                "   "
-                f"{package['name']}={package['version']} "
-                f"[file={package['filename']}]"
+                " - "
+                f"{item['package_name']} {item['package_version']} "
+                f"[repo={item['repo_id']}] "
+                f"[{item['distro']} {item['release']} {item['arch']}]"
             )
+            print(f"   manifest: {item['manifest']}")
+        print("use `--repo <name>` or `--repo-path <path>` for a single detailed snapshot view")
         return 0
-
-    version = args.version or apt_policy_version(args.package)
-    metadata = apt_show_metadata(args.package, version)
+    selected = sorted(matches, key=lambda item: str(item["package_version"]))[-1]
+    manifest_path = Path(str(selected["manifest"]))
+    repo_id = str(selected["repo_id"])
+    repo_path = str(selected["repo_path"])
+    data = load_package_file(manifest_path)
     if args.json:
-        print_json(
-            {
-                "package_name": args.package,
-                "package_version": version,
-                "metadata": metadata,
-            }
-        )
+        print_json(data)
         return 0
-    print(f"apt package: {args.package}")
-    print(f" - version: {version}")
-    for key in ["Package", "Version", "Architecture", "Depends", "Filename", "Description"]:
-        if key in metadata:
-            print(f" - {key.lower()}: {metadata[key]}")
+    context = data["context"]
+    print(f"apt package snapshot: {data['package_name']}")
+    print(f" - version: {data['package_version']}")
+    print(f" - distro: {context['distro']}")
+    print(f" - release: {context['release']}")
+    print(f" - arch: {context['arch']}")
+    print(f" - requested package: {data['requested_package']}")
+    print(f" - include dependencies: {'yes' if data.get('with_deps') else 'no'}")
+    print(f" - repo: {repo_id}")
+    print(f" - repo path: {repo_path}")
+    print(f" - payload root: {data['artifact_root']}")
+    print(f" - manifest: {manifest_path}")
+    print(f" - downloaded packages: {len(data.get('packages', []))}")
+    for package in data.get("packages", []):
+        print(
+            "   "
+            f"{package['name']}={package['version']} "
+            f"[file={package['filename']}]"
+        )
     return 0
 
 
 def cmd_apt_commands(args: argparse.Namespace) -> int:
     package = args.package.strip()
-    repo_id = args.repo_id.strip().lower()
-    with_deps = bool(args.with_deps)
+    output_path = Path(args.output or package).expanduser().resolve()
     source_name = args.source_name or f"ofpm-{safe_path_component(package)}"
 
     print(f"apt helper for: {package}")
-    print(f" - repo: {repo_id}")
-    print(f" - include dependencies: {'yes' if with_deps else 'no'}")
+    print(f" - output: {output_path}")
+    print(" - include dependencies: yes")
     print("builder-side:")
-    download_cmd = f"ofpm apt download {package}"
-    if args.version:
-        download_cmd += f" --version {args.version}"
-    if with_deps:
-        download_cmd += " --with-deps"
-    print(f"   {download_cmd}")
-    build_cmd = f"ofpm apt build-repo {repo_id} {package}"
+    build_cmd = f"ofpm apt build-repo {package}"
     if args.version:
         build_cmd += f" --version {args.version}"
+    build_cmd += f" --output {output_path}"
     print(f"   {build_cmd}")
     print("target-side:")
-    activate_cmd = f"sudo ofpm apt activate {repo_id} {package} --source-name {source_name}"
-    if args.version:
-        activate_cmd += f" --version {args.version}"
+    activate_cmd = f"sudo ofpm apt activate {output_path} --source-name {source_name}"
     print(f"   {activate_cmd}")
     print(f"   dpkg -s {package} >/dev/null 2>&1 || sudo apt install {package}")
     print("optional cleanup:")
     print(f"   sudo apt remove {package}")
-    print(f"   sudo ofpm apt deactivate {package} --source-name {source_name}")
+    print(f"   sudo ofpm apt deactivate {output_path} --source-name {source_name}")
     return 0
 
 
 def cmd_apt_download(args: argparse.Namespace) -> int:
-    root = primary_repo_path()
+    try:
+        root = primary_repo_path(args)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     context = effective_apt_context(args)
     requested_package = args.package
     requested_version = args.version or apt_policy_version(requested_package)
     package_names = [requested_package]
-    if args.with_deps:
-        package_names.extend(apt_dependency_names(requested_package))
+    package_names.extend(apt_dependency_names(requested_package))
 
     artifact_root = apt_artifact_root(
         root,
@@ -1914,7 +1941,7 @@ def cmd_apt_download(args: argparse.Namespace) -> int:
         "package_name": requested_package,
         "package_version": requested_version,
         "requested_package": requested_package,
-        "with_deps": args.with_deps,
+        "with_deps": True,
         "context": context,
         "downloaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "artifact_root": str(artifact_root),
@@ -1930,54 +1957,11 @@ def cmd_apt_download(args: argparse.Namespace) -> int:
     print(f" - distro: {context['distro']}")
     print(f" - release: {context['release']}")
     print(f" - arch: {context['arch']}")
-    print(f" - include dependencies: {'yes' if args.with_deps else 'no'}")
+    print(" - include dependencies: yes")
     print(f" - repo path: {root}")
     print(f" - payload root: {artifact_root}")
     print(f" - manifest: {manifest_path}")
     print(f" - package files: {len(downloaded_packages)}")
-    return 0
-
-
-def cmd_apt_import(args: argparse.Namespace) -> int:
-    repo_id = args.repo_id.strip().lower()
-    try:
-        repo_path = resolve_registered_repo_path(repo_id)
-    except ValueError as exc:
-        print(str(exc))
-        return 1
-    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
-    if provider_manifest_path is None:
-        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
-        print("hint: run `ofpm apt download <package>` first")
-        return 1
-    snapshot = load_package_file(provider_manifest_path)
-    package_id = (args.package_id or args.package).strip().lower()
-    version = snapshot["package_version"]
-    manifest_path = repo_path / "ofpm" / package_id / version / "package.py"
-    if manifest_path.exists():
-        print(f"package manifest already exists: {manifest_path}")
-        return 1
-    description = args.description or snapshot.get("apt_metadata", {}).get("Description-en") or snapshot.get("apt_metadata", {}).get("Description") or f"apt snapshot for {args.package}"
-    install_root = args.install_root or f"apt/{package_id}/{version}"
-    package_manifest = build_apt_package_manifest(
-        repo_path,
-        provider_manifest_path,
-        snapshot,
-        package_id=package_id,
-        profile_id=args.profile,
-        install_root=install_root,
-        description=description,
-    )
-    dump_package_file(manifest_path, package_manifest)
-    print(f"imported apt snapshot into repo: {args.package}")
-    print(f" - repo: {repo_id}")
-    print(f" - repo path: {repo_path}")
-    print(f" - package: {package_id}")
-    print(f" - version: {version}")
-    print(f" - profile: {args.profile}")
-    print(f" - install root: {install_root}")
-    print(f" - provider manifest: {provider_manifest_path}")
-    print(f" - package manifest: {manifest_path}")
     return 0
 
 
@@ -1997,99 +1981,129 @@ def isolated_apt_update(source_path: Path) -> None:
     )
 
 
+def apt_repo_source_name(base_path: Path, repo_root: Path, source_name: str | None = None) -> str:
+    if source_name:
+        prefix = source_name
+    else:
+        prefix = "ofpm"
+    if repo_root.resolve() == base_path.resolve():
+        suffix = safe_path_component(repo_root.name)
+    else:
+        suffix = safe_path_component(str(repo_root.resolve().relative_to(base_path.resolve())))
+    return f"{prefix}-{suffix}"
+
+
+def apt_source_file_path(
+    repo_root: Path,
+    base_path: Path,
+    source_name: str | None,
+    source_path: str | None,
+    recursive: bool,
+) -> Path:
+    if source_path:
+        configured = Path(source_path).expanduser().resolve()
+        if recursive:
+            return configured / f"{apt_repo_source_name(base_path, repo_root, source_name)}.list"
+        return configured
+    source_name_value = apt_repo_source_name(base_path, repo_root, source_name)
+    return Path(f"/etc/apt/sources.list.d/{source_name_value}.list").resolve()
+
+
 def cmd_apt_build_repo(args: argparse.Namespace) -> int:
-    repo_id = args.repo_id.strip().lower()
+    context = effective_apt_context(args)
+    requested_package = args.package
+    requested_version = args.version or apt_policy_version(requested_package)
+    repo_root = Path(args.output or requested_package).expanduser().resolve()
+    pool_dir = repo_root / "pool"
+    pool_dir.mkdir(parents=True, exist_ok=True)
+
+    package_names = [requested_package]
+    package_names.extend(apt_dependency_names(requested_package))
+    downloaded_packages: list[dict[str, object]] = []
+    for package_name in package_names:
+        version = requested_version if package_name == requested_package else apt_policy_version(package_name)
+        deb_path = apt_download_package(pool_dir, package_name, version)
+        downloaded_packages.append(
+            {
+                "name": package_name,
+                "version": version,
+                "filename": deb_path.name,
+                "path": str(deb_path),
+                "size": deb_path.stat().st_size,
+            }
+        )
+
     try:
-        repo_path = resolve_registered_repo_path(repo_id)
+        local_repo_root = build_apt_local_repo_from_root(repo_root, requested_package)
     except ValueError as exc:
         print(str(exc))
         return 1
-    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
-    if provider_manifest_path is None:
-        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
-        print("hint: run `ofpm apt download <package>` first")
-        return 1
-    snapshot = load_package_file(provider_manifest_path)
-    try:
-        local_repo_root = build_apt_local_repo(provider_manifest_path, snapshot)
-    except ValueError as exc:
-        print(str(exc))
-        return 1
-    print(f"built apt local repo: {args.package}")
-    print(f" - repo: {repo_id}")
-    print(f" - version: {snapshot['package_version']}")
-    print(f" - provider manifest: {provider_manifest_path}")
+    print(f"built apt local repo: {requested_package}")
+    print(f" - version: {requested_version}")
+    print(f" - distro: {context['distro']}")
+    print(f" - release: {context['release']}")
+    print(f" - arch: {context['arch']}")
+    print(" - include dependencies: yes")
     print(f" - local repo root: {local_repo_root}")
+    print(f" - pool dir: {pool_dir}")
+    print(f" - package files: {len(downloaded_packages)}")
     print(f" - source line: {apt_source_line(local_repo_root)}")
     return 0
 
 
 def cmd_apt_source_line(args: argparse.Namespace) -> int:
-    repo_id = args.repo_id.strip().lower()
-    try:
-        repo_path = resolve_registered_repo_path(repo_id)
-    except ValueError as exc:
-        print(str(exc))
+    repo_root = Path(args.path).expanduser().resolve()
+    if not (repo_root / "Packages").exists() or not (repo_root / "Packages.gz").exists():
+        print(f"apt local repo metadata not found: {repo_root}")
+        print("hint: run `ofpm apt build-repo <package> --output <path>` first")
         return 1
-    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
-    if provider_manifest_path is None:
-        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
-        return 1
-    snapshot = load_package_file(provider_manifest_path)
-    try:
-        local_repo_root = resolve_built_apt_local_repo_root(provider_manifest_path, snapshot)
-    except ValueError as exc:
-        print(str(exc))
-        return 1
-    print(apt_source_line(local_repo_root))
+    print(apt_source_line(repo_root))
     return 0
 
 
 def cmd_apt_activate(args: argparse.Namespace) -> int:
-    repo_id = args.repo_id.strip().lower()
-    try:
-        repo_path = resolve_registered_repo_path(repo_id)
-    except ValueError as exc:
-        print(str(exc))
-        return 1
-    provider_manifest_path = find_apt_package_manifest(repo_path, args.package, args.version)
-    if provider_manifest_path is None:
-        print(f"apt package snapshot not found in repo {repo_id}: {args.package}")
-        return 1
-    snapshot = load_package_file(provider_manifest_path)
-    try:
-        local_repo_root = resolve_built_apt_local_repo_root(provider_manifest_path, snapshot)
-    except ValueError as exc:
-        print(str(exc))
+    base_path = Path(args.path).expanduser().resolve()
+    recursive = bool(getattr(args, "recursive", False))
+    repo_roots = find_apt_local_repo_roots(base_path) if recursive else [base_path]
+    if not repo_roots or any(not ((repo_root / "Packages").exists() and (repo_root / "Packages.gz").exists()) for repo_root in repo_roots):
+        print(f"apt local repo metadata not found: {base_path}")
+        print("hint: run `ofpm apt build-repo <package> --output <path>` first")
         return 1
 
-    source_name = args.source_name or f"ofpm-{safe_path_component(args.package)}"
-    source_path = Path(args.source_path or f"/etc/apt/sources.list.d/{source_name}.list").resolve()
-    try:
-        source_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.write_text(apt_source_line(local_repo_root) + "\n", encoding="utf-8")
-    except PermissionError:
-        print(f"permission denied writing apt source file: {source_path}")
-        print("hint: run `sudo ofpm apt activate ...` or use `--source-path` under a writable directory")
-        return 1
+    created_source_paths: list[Path] = []
+    for local_repo_root in repo_roots:
+        source_path = apt_source_file_path(
+            local_repo_root,
+            base_path,
+            args.source_name,
+            args.source_path,
+            recursive,
+        )
+        try:
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(apt_source_line(local_repo_root) + "\n", encoding="utf-8")
+        except PermissionError:
+            print(f"permission denied writing apt source file: {source_path}")
+            print("hint: run `sudo ofpm apt activate ...` or use `--source-path` under a writable directory")
+            return 1
 
-    print(f"activated apt local repo: {args.package}")
-    print(f" - repo: {repo_id}")
-    print(f" - provider manifest: {provider_manifest_path}")
-    print(f" - local repo root: {local_repo_root}")
-    print(f" - source file: {source_path}")
-    print(f" - source line: {apt_source_line(local_repo_root)}")
+        print(f"activated apt local repo: {local_repo_root.name}")
+        print(f" - local repo root: {local_repo_root}")
+        print(f" - source file: {source_path}")
+        print(f" - source line: {apt_source_line(local_repo_root)}")
+        created_source_paths.append(source_path)
 
-    access_issue = apt_repo_access_issue(local_repo_root)
-    if access_issue:
-        print(f" - apt cache refresh: skipped")
-        print(f" - reason: {access_issue}")
-        print(" - hint: move the repo to a world-traversable path or relax parent-directory execute permissions")
-        return 1
+        access_issue = apt_repo_access_issue(local_repo_root)
+        if access_issue:
+            print(f" - apt cache refresh: skipped")
+            print(f" - reason: {access_issue}")
+            print(" - hint: move the repo to a world-traversable path or relax parent-directory execute permissions")
+            return 1
 
     if not args.no_update:
+        update_source_path = created_source_paths[0]
         try:
-            isolated_apt_update(source_path)
+            isolated_apt_update(update_source_path)
         except subprocess.CalledProcessError as exc:
             print(" - apt cache refresh: failed")
             if exc.output:
@@ -2108,22 +2122,44 @@ def cmd_apt_activate(args: argparse.Namespace) -> int:
 
 
 def cmd_apt_deactivate(args: argparse.Namespace) -> int:
-    source_name = args.source_name or f"ofpm-{safe_path_component(args.package)}"
-    source_path = Path(args.source_path or f"/etc/apt/sources.list.d/{source_name}.list").resolve()
-    if not source_path.exists():
-        print(f"apt source file not found: {source_path}")
+    base_path = Path(args.path).expanduser().resolve()
+    recursive = bool(getattr(args, "recursive", False))
+    repo_roots = find_apt_local_repo_roots(base_path) if recursive else [base_path]
+    if not repo_roots:
+        print(f"apt local repo not found: {base_path}")
         return 1
-    try:
-        source_path.unlink()
-    except PermissionError:
-        print(f"permission denied removing apt source file: {source_path}")
-        print("hint: run `sudo ofpm apt deactivate ...` or remove a source file under a writable directory")
+
+    removed_any = False
+    first_source_path: Path | None = None
+    for repo_root in repo_roots:
+        source_path = apt_source_file_path(
+            repo_root,
+            base_path,
+            args.source_name,
+            args.source_path,
+            recursive,
+        )
+        if not source_path.exists():
+            continue
+        try:
+            source_path.unlink()
+        except PermissionError:
+            print(f"permission denied removing apt source file: {source_path}")
+            print("hint: run `sudo ofpm apt deactivate ...` or remove a source file under a writable directory")
+            return 1
+        if first_source_path is None:
+            first_source_path = source_path
+        removed_any = True
+        print(f"deactivated apt local repo: {repo_root.name}")
+        print(f" - source file removed: {source_path}")
+
+    if not removed_any:
+        print(f"apt source files not found under: {base_path}")
         return 1
-    print(f"deactivated apt local repo: {args.package}")
-    print(f" - source file removed: {source_path}")
-    if not args.no_update:
+
+    if not args.no_update and first_source_path is not None:
         with contextlib.suppress(subprocess.CalledProcessError):
-            isolated_apt_update(source_path)
+            isolated_apt_update(first_source_path)
         print(" - apt cache refresh: requested")
     else:
         print(" - apt cache refresh: skipped")
@@ -2201,6 +2237,14 @@ def build_parser() -> argparse.ArgumentParser:
         command_parser.add_argument("--root-path")
         command_parser.add_argument("--all-roots", action="store_true")
 
+    def add_repo_query_options(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--repo")
+        command_parser.add_argument("--repo-path")
+        command_parser.add_argument("--repos-config")
+
+    def add_repos_config_option(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--repos-config")
+
     init_parser = subparsers.add_parser("init")
     init_parser.set_defaults(func=cmd_init)
 
@@ -2211,6 +2255,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--json", action="store_true")
     list_parser.add_argument("--verbose", action="store_true")
     add_root_options(list_parser)
+    add_repo_query_options(list_parser)
     list_parser.set_defaults(func=cmd_list)
 
     show_parser = subparsers.add_parser("show")
@@ -2219,29 +2264,34 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser.add_argument("--files", action="store_true")
     show_parser.add_argument("--json", action="store_true")
     add_root_options(show_parser)
+    add_repo_query_options(show_parser)
     show_parser.set_defaults(func=cmd_show)
 
     install_parser = subparsers.add_parser("install")
     install_parser.add_argument("package")
     install_parser.add_argument("--version")
     add_root_options(install_parser)
+    add_repo_query_options(install_parser)
     install_parser.set_defaults(func=cmd_install)
 
     reinstall_parser = subparsers.add_parser("reinstall")
     reinstall_parser.add_argument("package")
     reinstall_parser.add_argument("--version")
     add_root_options(reinstall_parser)
+    add_repo_query_options(reinstall_parser)
     reinstall_parser.set_defaults(func=cmd_reinstall)
 
     upgrade_parser = subparsers.add_parser("upgrade")
     upgrade_parser.add_argument("package")
     upgrade_parser.add_argument("--version")
     add_root_options(upgrade_parser)
+    add_repo_query_options(upgrade_parser)
     upgrade_parser.set_defaults(func=cmd_upgrade)
 
     remove_parser = subparsers.add_parser("remove")
     remove_parser.add_argument("package")
     add_root_options(remove_parser)
+    add_repo_query_options(remove_parser)
     remove_parser.set_defaults(func=cmd_remove)
 
     verify_pkg_parser = subparsers.add_parser("verify")
@@ -2249,11 +2299,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify_pkg_parser.add_argument("--target-root")
     verify_pkg_parser.add_argument("--strict-modes", action="store_true")
     add_root_options(verify_pkg_parser)
+    add_repo_query_options(verify_pkg_parser)
     verify_pkg_parser.set_defaults(func=cmd_verify)
 
     verify_source_parser = subparsers.add_parser("verify-source")
     verify_source_parser.add_argument("package")
     verify_source_parser.add_argument("--version")
+    add_repo_query_options(verify_source_parser)
     verify_source_parser.set_defaults(func=cmd_verify_source)
 
     state_parser = subparsers.add_parser("state")
@@ -2308,8 +2360,15 @@ def build_parser() -> argparse.ArgumentParser:
         current_parser.add_argument("--force", action="store_true")
         current_parser.set_defaults(func=cmd_install_cli)
 
+    def configure_reinstall_ofpm_parser(current_parser: argparse.ArgumentParser) -> None:
+        configure_install_ofpm_parser(current_parser)
+        current_parser.set_defaults(func=cmd_reinstall_cli)
+
     install_ofpm_parser = subparsers.add_parser("install-ofpm")
     configure_install_ofpm_parser(install_ofpm_parser)
+
+    reinstall_ofpm_parser = subparsers.add_parser("reinstall-ofpm")
+    configure_reinstall_ofpm_parser(reinstall_ofpm_parser)
 
     install_cli_parser = subparsers.add_parser("install-cli")
     configure_install_ofpm_parser(install_cli_parser)
@@ -2336,69 +2395,46 @@ def build_parser() -> argparse.ArgumentParser:
     package_init_parser.add_argument("--force", action="store_true")
     package_init_parser.set_defaults(func=cmd_package_init)
 
-    source_parser = subparsers.add_parser("source")
-    source_subparsers = source_parser.add_subparsers(dest="source_command", required=True)
-
-    source_list_parser = source_subparsers.add_parser("list")
-    source_list_parser.add_argument("--json", action="store_true")
-    source_list_parser.set_defaults(func=cmd_source_list)
-
-    source_show_parser = source_subparsers.add_parser("show")
-    source_show_parser.add_argument("source_name")
-    source_show_parser.add_argument("--json", action="store_true")
-    source_show_parser.set_defaults(func=cmd_source_show)
-
-    source_add_parser = source_subparsers.add_parser("add")
-    source_add_parser.add_argument("source_name")
-    source_add_parser.add_argument("path")
-    source_add_parser.set_defaults(func=cmd_source_add)
-
-    source_remove_parser = source_subparsers.add_parser("remove")
-    source_remove_parser.add_argument("source_name")
-    source_remove_parser.set_defaults(func=cmd_source_remove)
-
-    source_verify_parser = source_subparsers.add_parser("verify")
-    source_verify_parser.add_argument("source_name")
-    source_verify_parser.set_defaults(func=cmd_source_verify)
-
     repo_parser = subparsers.add_parser("repo")
     repo_subparsers = repo_parser.add_subparsers(dest="repo_command", required=True)
 
     repo_list_parser = repo_subparsers.add_parser("list")
-    repo_list_parser.add_argument("--scope", choices=["user", "repo"], default="repo")
     repo_list_parser.add_argument("--json", action="store_true")
+    add_repos_config_option(repo_list_parser)
     repo_list_parser.set_defaults(func=cmd_repo_list)
 
     repo_add_parser = repo_subparsers.add_parser("add")
     repo_add_parser.add_argument("repo_id")
     repo_add_parser.add_argument("path")
-    repo_add_parser.add_argument("--scope", choices=["user", "repo"], default="repo")
+    add_repos_config_option(repo_add_parser)
     repo_add_parser.set_defaults(func=cmd_repo_add)
 
     repo_remove_parser = repo_subparsers.add_parser("remove")
     repo_remove_parser.add_argument("repo_id")
-    repo_remove_parser.add_argument("--scope", choices=["user", "repo"], default="repo")
+    add_repos_config_option(repo_remove_parser)
     repo_remove_parser.set_defaults(func=cmd_repo_remove)
 
     repo_show_parser = repo_subparsers.add_parser("show")
     repo_show_parser.add_argument("repo_id")
-    repo_show_parser.add_argument("--scope", choices=["user", "repo"], default="repo")
+    add_repos_config_option(repo_show_parser)
     repo_show_parser.set_defaults(func=cmd_repo_show)
 
     repo_import_parser = repo_subparsers.add_parser("import")
     repo_import_parser.add_argument("repo_id")
-    repo_import_parser.add_argument("--source", required=True)
+    repo_import_parser.add_argument("--path", required=True)
     repo_import_parser.add_argument("--package", required=True)
     repo_import_parser.add_argument("--version", default="1.0.0")
     repo_import_parser.add_argument("--profile", default="ubuntu-22.04")
     repo_import_parser.add_argument("--install-root")
     repo_import_parser.add_argument("--description")
+    add_repos_config_option(repo_import_parser)
     repo_import_parser.set_defaults(func=cmd_repo_import)
 
     repo_import_package_parser = repo_subparsers.add_parser("import-package")
     repo_import_package_parser.add_argument("repo_id")
     repo_import_package_parser.add_argument("path")
     repo_import_package_parser.add_argument("--replace", action="store_true")
+    add_repos_config_option(repo_import_package_parser)
     repo_import_package_parser.set_defaults(func=cmd_repo_import_package)
 
     apt_parser = subparsers.add_parser("apt")
@@ -2406,24 +2442,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     apt_list_parser = apt_subparsers.add_parser("list")
     apt_list_parser.add_argument("pattern", nargs="?")
-    apt_list_parser.add_argument("--installed", action="store_true")
-    apt_list_parser.add_argument("--downloaded", action="store_true")
     apt_list_parser.add_argument("--json", action="store_true")
     apt_list_parser.add_argument("--verbose", action="store_true")
+    add_repo_query_options(apt_list_parser)
     apt_list_parser.set_defaults(func=cmd_apt_list)
 
     apt_show_parser = apt_subparsers.add_parser("show")
     apt_show_parser.add_argument("package")
     apt_show_parser.add_argument("--version")
-    apt_show_parser.add_argument("--downloaded", action="store_true")
     apt_show_parser.add_argument("--json", action="store_true")
+    add_repo_query_options(apt_show_parser)
     apt_show_parser.set_defaults(func=cmd_apt_show)
 
     apt_commands_parser = apt_subparsers.add_parser("commands")
-    apt_commands_parser.add_argument("repo_id")
     apt_commands_parser.add_argument("package")
     apt_commands_parser.add_argument("--version")
-    apt_commands_parser.add_argument("--with-deps", action="store_true")
+    apt_commands_parser.add_argument("--output")
     apt_commands_parser.add_argument("--source-name")
     apt_commands_parser.set_defaults(func=cmd_apt_commands)
 
@@ -2433,46 +2467,37 @@ def build_parser() -> argparse.ArgumentParser:
     apt_download_parser.add_argument("--distro")
     apt_download_parser.add_argument("--release")
     apt_download_parser.add_argument("--arch")
-    apt_download_parser.add_argument("--with-deps", action="store_true")
+    add_repo_query_options(apt_download_parser)
     apt_download_parser.set_defaults(func=cmd_apt_download)
 
     apt_build_repo_parser = apt_subparsers.add_parser("build-repo")
-    apt_build_repo_parser.add_argument("repo_id")
     apt_build_repo_parser.add_argument("package")
     apt_build_repo_parser.add_argument("--version")
+    apt_build_repo_parser.add_argument("--distro")
+    apt_build_repo_parser.add_argument("--release")
+    apt_build_repo_parser.add_argument("--arch")
+    apt_build_repo_parser.add_argument("--output")
     apt_build_repo_parser.set_defaults(func=cmd_apt_build_repo)
 
     apt_source_line_parser = apt_subparsers.add_parser("source-line")
-    apt_source_line_parser.add_argument("repo_id")
-    apt_source_line_parser.add_argument("package")
-    apt_source_line_parser.add_argument("--version")
+    apt_source_line_parser.add_argument("path")
     apt_source_line_parser.set_defaults(func=cmd_apt_source_line)
 
     apt_activate_parser = apt_subparsers.add_parser("activate")
-    apt_activate_parser.add_argument("repo_id")
-    apt_activate_parser.add_argument("package")
-    apt_activate_parser.add_argument("--version")
+    apt_activate_parser.add_argument("path")
+    apt_activate_parser.add_argument("--recursive", action="store_true")
     apt_activate_parser.add_argument("--source-name")
     apt_activate_parser.add_argument("--source-path")
     apt_activate_parser.add_argument("--no-update", action="store_true")
     apt_activate_parser.set_defaults(func=cmd_apt_activate)
 
     apt_deactivate_parser = apt_subparsers.add_parser("deactivate")
-    apt_deactivate_parser.add_argument("package")
+    apt_deactivate_parser.add_argument("path")
+    apt_deactivate_parser.add_argument("--recursive", action="store_true")
     apt_deactivate_parser.add_argument("--source-name")
     apt_deactivate_parser.add_argument("--source-path")
     apt_deactivate_parser.add_argument("--no-update", action="store_true")
     apt_deactivate_parser.set_defaults(func=cmd_apt_deactivate)
-
-    apt_import_parser = apt_subparsers.add_parser("import")
-    apt_import_parser.add_argument("repo_id")
-    apt_import_parser.add_argument("package")
-    apt_import_parser.add_argument("--version")
-    apt_import_parser.add_argument("--package-id")
-    apt_import_parser.add_argument("--profile", default="ubuntu-22.04")
-    apt_import_parser.add_argument("--install-root")
-    apt_import_parser.add_argument("--description")
-    apt_import_parser.set_defaults(func=cmd_apt_import)
 
     dnf_parser = subparsers.add_parser("dnf")
     dnf_subparsers = dnf_parser.add_subparsers(dest="dnf_command", required=True)

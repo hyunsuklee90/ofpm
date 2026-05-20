@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OFPM_SRC="/mnt/d/OneDrive/0project/ofpm"
 SHARED_DIR="/home/hyunsuk/shared"
 OFPM_ARTIFACTS="/mnt/d/ofpm/artifacts"
