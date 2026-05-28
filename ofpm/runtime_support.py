@@ -232,6 +232,7 @@ def remove_managed_payload(
     package = installed_state["raw"]["package"]
     version_root = Path(package["version_root"])
     current_path = Path(package["current_path"])
+    package_payload_root = version_root.parent
 
     if current_path.is_symlink():
         try:
@@ -246,6 +247,15 @@ def remove_managed_payload(
     if version_root.exists():
         shutil.rmtree(version_root)
 
+    removed_package_payload_root = False
+    payloads_root = managed_root / "payloads"
+    if package_payload_root != payloads_root and package_payload_root.exists():
+        try:
+            package_payload_root.rmdir()
+            removed_package_payload_root = True
+        except OSError:
+            removed_package_payload_root = False
+
     record_removal(managed_root, installed_state)
 
     return {
@@ -253,6 +263,7 @@ def remove_managed_payload(
         "package_version": package["package_version"],
         "managed_root": str(managed_root),
         "removed_version_root": str(version_root),
+        "removed_package_payload_root": str(package_payload_root) if removed_package_payload_root else "",
     }
 
 

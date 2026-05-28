@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -169,6 +170,7 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertIn("removed package: hello-tool 1.0.0", removed.stdout)
             self.assertFalse(public_hello.exists())
+            self.assertFalse((managed_root / "payloads" / "hello-tool").exists())
 
             listed_again = self.run_cli(
                 "list",
@@ -373,6 +375,113 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertTrue(managed_state_file(user_root, "node").exists())
             self.assertTrue(managed_state_file(system_root, "node").exists())
+
+    def write_ollama_blob(self, models_dir: Path, content: bytes) -> str:
+        digest = hashlib.sha256(content).hexdigest()
+        blob_path = models_dir / "blobs" / f"sha256-{digest}"
+        blob_path.parent.mkdir(parents=True, exist_ok=True)
+        blob_path.write_bytes(content)
+        return digest
+
+    def write_ollama_manifest(
+        self,
+        models_dir: Path,
+        name: str,
+        tag: str,
+        *,
+        config_digest: str,
+        layer_digests: list[str],
+    ) -> Path:
+        manifest_path = models_dir / "manifests" / "registry.ollama.ai" / "library" / name / tag
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                    "config": {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": f"sha256:{config_digest}",
+                        "size": 1,
+                    },
+                    "layers": [
+                        {
+                            "mediaType": "application/vnd.ollama.image.model",
+                            "digest": f"sha256:{digest}",
+                            "size": 1,
+                        }
+                        for digest in layer_digests
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return manifest_path
+
+    def test_ollama_list_copy_and_verify_model_store(self) -> None:
+        with self.make_tempdir("ofpm-cli-ollama-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            source = scenario_root / "source-models"
+            target = scenario_root / "target-models"
+            env = self.scenario_env(scenario_root)
+
+            shared = self.write_ollama_blob(source, b"shared config")
+            demo_layer = self.write_ollama_blob(source, b"demo layer")
+            other_layer = self.write_ollama_blob(source, b"other layer")
+            self.write_ollama_manifest(
+                source,
+                "demo",
+                "latest",
+                config_digest=shared,
+                layer_digests=[demo_layer],
+            )
+            self.write_ollama_manifest(
+                source,
+                "other",
+                "latest",
+                config_digest=shared,
+                layer_digests=[other_layer],
+            )
+
+            listed = self.run_cli("ollama", "list", "--models-dir", str(source), env=env)
+            self.assertIn("ollama models:", listed.stdout)
+            self.assertIn("demo:latest", listed.stdout)
+            self.assertIn("other:latest", listed.stdout)
+
+            dry_run = self.run_cli(
+                "ollama",
+                "copy",
+                "demo",
+                "--from",
+                str(source),
+                "--to",
+                str(target),
+                "--dry-run",
+                env=env,
+            )
+            self.assertIn("planned ollama model copy: demo:latest", dry_run.stdout)
+            self.assertFalse(target.exists())
+
+            copied = self.run_cli(
+                "ollama",
+                "copy",
+                "demo",
+                "--from",
+                str(source),
+                "--to",
+                str(target),
+                env=env,
+            )
+            self.assertIn("copied ollama model: demo:latest", copied.stdout)
+            self.assertTrue((target / "manifests" / "registry.ollama.ai" / "library" / "demo" / "latest").exists())
+            self.assertTrue((target / "blobs" / f"sha256-{shared}").exists())
+            self.assertTrue((target / "blobs" / f"sha256-{demo_layer}").exists())
+            self.assertFalse((target / "blobs" / f"sha256-{other_layer}").exists())
+
+            verified = self.run_cli("ollama", "verify", "demo", "--models-dir", str(target), env=env)
+            self.assertIn(" - result: verified", verified.stdout)
 
     def test_apt_build_repo_and_activate_flow(self) -> None:
         with self.make_tempdir("ofpm-cli-apt-local-") as temp_dir:

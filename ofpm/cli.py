@@ -2222,6 +2222,24 @@ def cmd_dnf_deactivate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ollama_list(args: argparse.Namespace) -> int:
+    from ofpm.ollama.cli import cmd_list
+
+    return cmd_list(args)
+
+
+def cmd_ollama_copy(args: argparse.Namespace) -> int:
+    from ofpm.ollama.cli import cmd_copy
+
+    return cmd_copy(args)
+
+
+def cmd_ollama_verify(args: argparse.Namespace) -> int:
+    from ofpm.ollama.cli import cmd_verify
+
+    return cmd_verify(args)
+
+
 def print_json(data: dict) -> None:
     import json
 
@@ -2498,6 +2516,33 @@ def build_parser() -> argparse.ArgumentParser:
     apt_deactivate_parser.add_argument("--source-path")
     apt_deactivate_parser.add_argument("--no-update", action="store_true")
     apt_deactivate_parser.set_defaults(func=cmd_apt_deactivate)
+
+    ollama_parser = subparsers.add_parser("ollama", help="utilities for Ollama model stores")
+    ollama_subparsers = ollama_parser.add_subparsers(
+        dest="ollama_command",
+        required=True,
+    )
+
+    ollama_list_parser = ollama_subparsers.add_parser("list", help="list models in an Ollama models directory")
+    ollama_list_parser.add_argument("--models-dir", help="Ollama models directory; defaults to OLLAMA_MODELS or ~/.ollama/models")
+    ollama_list_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ollama_list_parser.add_argument("--verbose", action="store_true", help="show manifest paths and full refs")
+    ollama_list_parser.set_defaults(func=cmd_ollama_list)
+
+    ollama_copy_parser = ollama_subparsers.add_parser("copy", help="copy one Ollama model closure to another models directory")
+    ollama_copy_parser.add_argument("model", help="model ref, for example llama3.2:3b")
+    ollama_copy_parser.add_argument("--from", dest="source", help="source models directory; defaults to OLLAMA_MODELS or ~/.ollama/models")
+    ollama_copy_parser.add_argument("--to", dest="target", required=True, help="target models directory")
+    ollama_copy_parser.add_argument("--dry-run", action="store_true", help="show what would be copied without writing files")
+    ollama_copy_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ollama_copy_parser.set_defaults(func=cmd_ollama_copy)
+
+    ollama_verify_parser = ollama_subparsers.add_parser("verify", help="verify one Ollama model manifest and referenced blobs")
+    ollama_verify_parser.add_argument("model", help="model ref, for example llama3.2:3b")
+    ollama_verify_parser.add_argument("--models-dir", help="Ollama models directory; defaults to OLLAMA_MODELS or ~/.ollama/models")
+    ollama_verify_parser.add_argument("--no-hash", action="store_true", help="check file presence only, without sha256 hashing")
+    ollama_verify_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    ollama_verify_parser.set_defaults(func=cmd_ollama_verify)
 
     dnf_parser = subparsers.add_parser("dnf")
     dnf_subparsers = dnf_parser.add_subparsers(dest="dnf_command", required=True)
