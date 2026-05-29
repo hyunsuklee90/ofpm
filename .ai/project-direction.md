@@ -26,9 +26,8 @@ The intended flow is:
 Builder-side commands:
 
 - `ofpm repo import <repo> --path <path> --package <package>`
-- `ofpm apt list`
-- `ofpm apt show <package>`
-- `ofpm apt download <package>`
+- `ofpm repo import-archive <repo> --archive <path>`
+- `ofpm apt build-repo <package>`
 
 Target-side commands:
 

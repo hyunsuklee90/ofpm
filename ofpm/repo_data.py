@@ -61,8 +61,39 @@ def save_repos_config(path: Path, repos: dict[str, str]) -> None:
     dump_json(path, dict(sorted(repos.items())))
 
 
+def is_valid_native_package_manifest(manifest_path: Path) -> bool:
+    try:
+        data = load_package_file(manifest_path)
+    except Exception:
+        return False
+    required = ["package_id", "version", "install_root", "files"]
+    return all(key in data for key in required)
+
+
+def is_native_repo_package_root(path: Path) -> bool:
+    for manifest_path in sorted(path.glob("*/*/package.py")):
+        if is_valid_native_package_manifest(manifest_path):
+            return True
+    for manifest_path in sorted(path.glob("*/*/package.json")):
+        if is_valid_native_package_manifest(manifest_path):
+            return True
+    return False
+
+
+def native_repo_package_root(repo_root: Path) -> Path:
+    if is_native_repo_package_root(repo_root):
+        return repo_root
+    candidate = repo_root / "ofpm"
+    if is_native_repo_package_root(candidate):
+        return candidate
+    legacy = repo_root / "catalog" / "packages"
+    if is_native_repo_package_root(legacy):
+        return legacy
+    return candidate
+
+
 def repo_package_manifests(repo_root: Path) -> list[Path]:
-    package_dir = repo_root / "ofpm"
+    package_dir = native_repo_package_root(repo_root)
     results = sorted(package_dir.glob("*/*/package.py"))
     if results:
         return results

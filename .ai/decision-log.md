@@ -42,9 +42,10 @@
 
 - Target-side package management should default to offline-strict behavior
 - Builder-side artifact acquisition should be represented as separate provider wrapper commands
-- First implemented online acquisition command family: `apt list`, `apt show`, `apt download`
+- Builder-side provider helper focus moved to local repo construction such as `apt build-repo`
 - Preferred offline transfer workflow: prepare a portable repo snapshot and copy the repo directory
 - Local builder-side directories should be passed directly to `repo import --path`
+- Release archives may be passed directly to `repo import-archive --archive`
 
 ### State Direction
 

@@ -86,6 +86,17 @@ class OfpmManagedFilesRecipe(OfpmRecipe):
         return runtime.remove_managed_payload()
 
 
+class OfpmArchiveExtractRecipe(OfpmRecipe):
+    def install(self, runtime):
+        return runtime.install_archive_extract()
+
+    def verify(self, runtime):
+        return runtime.verify_managed_files()
+
+    def remove(self, runtime):
+        return runtime.remove_managed_payload()
+
+
 class AptManagedFilesRecipe(AptRecipe):
     def install(self, runtime):
         return runtime.install_managed_files()

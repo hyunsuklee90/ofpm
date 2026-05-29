@@ -115,7 +115,13 @@ def dump_package_file(path: Path, data: dict[str, Any]) -> None:
 
     provider = normalized.get("metadata", {}).get("provider", "ofpm")
     schema_version = normalized.get("schema_version", "1")
-    base_class = "AptManagedFilesRecipe" if provider == "apt" else "OfpmManagedFilesRecipe"
+    install_mode = normalized.get("metadata", {}).get("install_mode", "")
+    if provider == "apt":
+        base_class = "AptManagedFilesRecipe"
+    elif install_mode == "archive":
+        base_class = "OfpmArchiveExtractRecipe"
+    else:
+        base_class = "OfpmManagedFilesRecipe"
     body_target = pprint.pformat(normalized.get("target", {}), sort_dicts=False, width=100)
     body_depends = pprint.pformat(normalized.get("depends", []), sort_dicts=False, width=100)
     body_plugins = pprint.pformat(normalized.get("plugins", []), sort_dicts=False, width=100)

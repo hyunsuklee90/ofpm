@@ -12,7 +12,7 @@ from ofpm.installers import (
     verify_package_from_definition,
 )
 from ofpm.package_def import dump_package_file, load_package_file
-from ofpm.repo_data import package_summary_from_manifest, verify_package_sources
+from ofpm.repo_data import native_repo_package_root, package_summary_from_manifest, verify_package_sources
 from ofpm.state_db import managed_state_file
 
 
@@ -176,7 +176,7 @@ def import_local_package(
     package = resolve_local_package(package_path)
     package_id = package.package_data["package_id"]
     version = package.package_data["version"]
-    dest_root = repo_path / "ofpm" / package_id / version
+    dest_root = native_repo_package_root(repo_path) / package_id / version
     if dest_root.exists():
         if not replace:
             raise ValueError(f"package already exists in repo: {dest_root}")

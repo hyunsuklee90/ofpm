@@ -49,7 +49,8 @@ In installed mode:
 
 - source root is copied into `<managed-root>/src`
 - repo config lives under `<managed-root>/config/repos.json`
-- an empty `<managed-root>/repos/main` is created as a default local repo location
+- `<managed-root>/repos/ofpm/main` is created as the default native repo location
+- `<managed-root>/repos/ofpm/local-main` is created as the default large local repo location
 
 ## 3. install-ofpm Layout
 
@@ -114,13 +115,15 @@ sudo python3 -m ofpm reinstall-ofpm --root system
 
 ## 4. What install-ofpm Installs
 
-`install-ofpm` does not copy the entire dev checkout.
+`install-ofpm` does not copy the entire dev checkout. It uses allowlists for the
+installed source tree and the default installed repo roots.
 
 It installs:
 
 - `<managed-root>/bin/ofpm`
 - `<managed-root>/src/ofpm/...`
-- `<managed-root>/repos/main`
+- `<managed-root>/repos/ofpm/main`
+- `<managed-root>/repos/ofpm/local-main`
 - `<managed-root>/config/repos.json`
 
 It also updates shell startup files:
@@ -129,16 +132,20 @@ It also updates shell startup files:
 - system install: `/etc/profile.d/ofpm.sh`
 - system install interactive bash: `/etc/bash.bashrc` or `/etc/bashrc`
 
-It intentionally excludes:
+The installed source tree includes:
 
-- `tests/`
-- `.ai/`
-- `docker/`
-- `repos/`
-- `config/`
-- cache directories and `*.pyc`/`*.pyo`
+- `ofpm/`
+- `docs/`
+- `README.md`
 
-The installed tree keeps the Python runtime and docs, then creates a fresh installed-side `repos/main` and `config/repos.json`.
+The installed repo tree includes:
+
+- `repos/ofpm/main`
+- `repos/ofpm/local-main`
+
+Cache directories and `*.pyc`/`*.pyo` files are skipped while copying. The
+installed tree keeps the Python runtime and docs, then creates installed-side
+repo roots under `repos/ofpm/` and writes `config/repos.json`.
 
 ## 5. Repo Registration
 
@@ -147,7 +154,8 @@ The installed tree keeps the Python runtime and docs, then creates a fresh insta
 Register a repo like this:
 
 ```bash
-ofpm repo add main /some/path/to/repos/main
+ofpm repo add main /some/path/to/repos/ofpm/main
+ofpm repo add local-main /some/path/to/repos/ofpm/local-main
 ```
 
 List the current registrations:
@@ -221,13 +229,43 @@ python3 -m ofpm repo import main \
 This copies the local source path into:
 
 ```text
-repos/main/ofpm/<package>/<version>/payload/
+repos/ofpm/main/<package>/<version>/payload/
 ```
 
 and writes:
 
 ```text
-repos/main/ofpm/<package>/<version>/package.py
+repos/ofpm/main/<package>/<version>/package.py
+```
+
+### Import a Release Archive into a Repo
+
+```bash
+python3 -m ofpm repo import-archive main \
+  --archive /some/release/cds-0.1.0.tar.gz \
+  --package cds \
+  --version 0.1.0 \
+  --profile ubuntu-22.04
+```
+
+If release metadata already exists, use:
+
+```bash
+python3 -m ofpm repo import-archive main \
+  --archive /some/release/cds-0.1.0.tar.gz \
+  --meta /some/release/ofpm.json
+```
+
+This copies the archive into:
+
+```text
+repos/ofpm/main/<package>/<version>/payload/
+```
+
+and writes an archive-extract scaffold:
+
+```text
+repos/ofpm/main/<package>/<version>/package.py
 ```
 
 ### Import an Existing package.py + payload/ Directory
@@ -246,8 +284,11 @@ python3 -m ofpm repo import-package main /some/packaging/ofpm
 ### Build Local Repo
 
 ```bash
-ofpm apt build-repo zstd --output ./zstd-repo
-ofpm apt source-line ./zstd-repo
+ofpm apt
+mkdir -p ./zstd-repo
+cd ./zstd-repo
+ofpm apt build-repo zstd
+ofpm apt source-line .
 ```
 
 This creates:
@@ -256,7 +297,9 @@ This creates:
 - `Packages`
 - `Packages.gz`
 
-inside `./zstd-repo/`.
+inside the current directory by default.
+
+Use `--output <path>` only when you want a different repo root.
 
 ### Activate on Target
 
@@ -269,8 +312,8 @@ sudo ofpm apt deactivate ./zstd-repo
 If a parent directory contains multiple built apt repos, you can register or remove them in one step:
 
 ```bash
-sudo ofpm apt activate /opt/ofpm/repos/main/apt --recursive
-sudo ofpm apt deactivate /opt/ofpm/repos/main/apt --recursive
+sudo ofpm apt activate /opt/ofpm/repos/apt/main --recursive
+sudo ofpm apt deactivate /opt/ofpm/repos/apt/main --recursive
 ```
 
 ## 9. dnf Helper Flow
@@ -284,9 +327,17 @@ sudo ofpm apt deactivate /opt/ofpm/repos/main/apt --recursive
 Example:
 
 ```bash
-ofpm dnf build-repo offline-main /some/rpm/repo
-sudo ofpm dnf activate offline-main /some/rpm/repo
+ofpm dnf build-repo /some/rpm/repo
+sudo ofpm dnf activate /some/rpm/repo
 sudo dnf install zstd
+sudo ofpm dnf deactivate /some/rpm/repo
+```
+
+If a parent directory contains multiple built dnf repos, you can register or remove them in one step:
+
+```bash
+sudo ofpm dnf activate /opt/ofpm/repos/rpm --recursive
+sudo ofpm dnf deactivate /opt/ofpm/repos/rpm --recursive
 ```
 
 ## 10. Recommended Practical Workflow
@@ -309,6 +360,7 @@ Use:
 python3 -m ofpm install-ofpm --root user
 source ~/.bashrc
 ofpm repo add main /path/to/my/repo
+ofpm repo add local-main /path/to/my/local-repo
 ofpm list
 ```
 
@@ -316,14 +368,17 @@ ofpm list
 
 ```bash
 sudo python3 -m ofpm install-ofpm --root system
-sudo ofpm repo add main /opt/ofpm/repos/main
+sudo ofpm repo add main /opt/ofpm/repos/ofpm/main
+sudo ofpm repo add local-main /opt/ofpm/repos/ofpm/local-main
 ofpm list
 ```
 
 ### Provider Offline Helper Usage
 
 ```bash
-ofpm apt build-repo zstd --output ./zstd-repo
+mkdir -p ./zstd-repo
+cd ./zstd-repo
+ofpm apt build-repo zstd
 sudo ofpm apt activate ./zstd-repo
 sudo apt install zstd
 ```

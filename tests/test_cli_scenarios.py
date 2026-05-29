@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,7 +21,16 @@ from ofpm.state_db import managed_state_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_REPO = REPO_ROOT / "tests" / "fixtures" / "repos" / "minimal"
-WORK_ROOT = REPO_ROOT / "tests" / "work"
+WORK_ROOT = Path(os.environ.get("OFPM_TEST_WORK_ROOT", "/tmp/ofpm-tests")).resolve()
+
+
+def keep_test_work() -> bool:
+    return os.environ.get("OFPM_TEST_KEEP_WORK", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def cleanup_test_work() -> None:
+    if WORK_ROOT.exists():
+        shutil.rmtree(WORK_ROOT, ignore_errors=True)
 
 
 def write_installed_state(
@@ -49,6 +59,17 @@ def write_installed_state(
 
 
 class CliScenarioTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not keep_test_work():
+            cleanup_test_work()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if keep_test_work():
+            return
+        cleanup_test_work()
+
     def make_tempdir(self, prefix: str) -> tempfile.TemporaryDirectory[str]:
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
         return tempfile.TemporaryDirectory(prefix=prefix, dir=WORK_ROOT)
@@ -77,12 +98,35 @@ class CliScenarioTests(unittest.TestCase):
             check=True,
         )
 
+    def test_help_output_describes_common_flow_and_commands(self) -> None:
+        top_level = self.run_cli("-h")
+        self.assertIn("Personal offline package manager", top_level.stdout)
+        self.assertIn("common target-side flow:", top_level.stdout)
+        self.assertIn("ofpm repo add main /path/to/copied/repo", top_level.stdout)
+        self.assertIn("install       install a package from an offline repo", top_level.stdout)
+        self.assertIn("repo          register and inspect offline repo snapshots", top_level.stdout)
+
+        install_help = self.run_cli("install", "-h")
+        self.assertIn("package id to install", install_help.stdout)
+        self.assertIn("install a specific version", install_help.stdout)
+        self.assertIn("query a repo snapshot directly without registering it", install_help.stdout)
+
     def make_fake_ofpm_source(self, source_root: Path) -> None:
         package_root = source_root / "ofpm"
         package_root.mkdir(parents=True, exist_ok=True)
         (package_root / "__main__.py").write_text("print('fake ofpm')\n", encoding="utf-8")
         (package_root / "cli.py").write_text("def main():\n    return 0\n", encoding="utf-8")
         (source_root / "README.md").write_text("fake source tree\n", encoding="utf-8")
+        (source_root / "repos" / "ofpm" / "main" / "demo" / "1.0.0").mkdir(parents=True, exist_ok=True)
+        (source_root / "repos" / "ofpm" / "main" / "demo" / "1.0.0" / "package.py").write_text(
+            "RECIPE = {'package_id': 'demo'}\n",
+            encoding="utf-8",
+        )
+        (source_root / "repos" / "apt" / "main" / "zstd" / "1.0.0").mkdir(parents=True, exist_ok=True)
+        (source_root / "repos" / "apt" / "main" / "zstd" / "1.0.0" / "package.py").write_text(
+            "RECIPE = {'package_id': 'zstd'}\n",
+            encoding="utf-8",
+        )
 
     def test_minimal_repo_roundtrip_and_env_output(self) -> None:
         with self.make_tempdir("ofpm-cli-minimal-") as temp_dir:
@@ -191,10 +235,12 @@ class CliScenarioTests(unittest.TestCase):
             managed_root = rootfs / "home" / "tester" / ".ofpm"
 
             (source_path / "bin").mkdir(parents=True, exist_ok=True)
-            (source_path / "bin" / "hello-import").write_text(
+            imported_script = source_path / "bin" / "hello-import"
+            imported_script.write_text(
                 "#!/usr/bin/env bash\necho hello-import\n",
                 encoding="utf-8",
             )
+            imported_script.chmod(0o755)
 
             repo_path.mkdir(parents=True, exist_ok=True)
             self.run_cli("repo", "add", "importtest", str(repo_path), env=env)
@@ -222,6 +268,13 @@ class CliScenarioTests(unittest.TestCase):
             self.assertIn("target", package_data)
             self.assertEqual(package_data["target"]["distro"], "ubuntu")
             self.assertEqual(package_data["profile_id"], "ubuntu-22.04")
+            self.assertEqual(package_data["files"][0]["source_dir"], "payload")
+
+            verified = self.run_cli("package", "verify", str(repo_path / "ofpm" / "hello-import" / "1.0.0"), env=env)
+            self.assertIn(" - result: verified", verified.stdout)
+
+            tested = self.run_cli("package", "test", str(repo_path / "ofpm" / "hello-import" / "1.0.0"), env=env)
+            self.assertIn(" - result: passed", tested.stdout)
 
             listed = self.run_cli("list", "--all", env=env)
             self.assertIn("hello-import 1.0.0", listed.stdout)
@@ -234,6 +287,94 @@ class CliScenarioTests(unittest.TestCase):
                 env=env,
             )
             self.assertIn("installed package: hello-import 1.0.0", installed.stdout)
+
+    def test_repo_import_archive_emits_archive_extract_package(self) -> None:
+        with self.make_tempdir("ofpm-cli-import-archive-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            rootfs = scenario_root / "rootfs"
+            repo_path = scenario_root / "repo"
+            source_path = scenario_root / "source-cds"
+            archive_path = scenario_root / "release" / "0.1.0" / "cds-0.1.0.tar.gz"
+            meta_path = scenario_root / "release" / "0.1.0" / "ofpm.json"
+            env = self.scenario_env(scenario_root)
+            managed_root = rootfs / "home" / "tester" / ".ofpm"
+
+            (source_path / "bashrc.d").mkdir(parents=True, exist_ok=True)
+            (source_path / "functions" / "cds").mkdir(parents=True, exist_ok=True)
+            (source_path / "themes" / "default").mkdir(parents=True, exist_ok=True)
+            (source_path / "bashrc.sh").write_text("echo cds\n", encoding="utf-8")
+            (source_path / "bashrc.d" / "prompt.sh").write_text("echo prompt\n", encoding="utf-8")
+            (source_path / "functions" / "cds" / "cds.sh").write_text("echo cds-fn\n", encoding="utf-8")
+            (source_path / "themes" / "default" / "vimrc").write_text("set nocompatible\n", encoding="utf-8")
+
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(source_path, arcname="cds-0.1.0")
+
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "package": "cds",
+                        "version": "0.1.0",
+                        "profile": "ubuntu-22.04",
+                        "description": "portable cds shell environment core release",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            repo_path.mkdir(parents=True, exist_ok=True)
+            self.run_cli("repo", "add", "importtest", str(repo_path), env=env)
+
+            try:
+                imported = self.run_cli(
+                    "repo",
+                    "import-archive",
+                    "importtest",
+                    "--archive",
+                    str(archive_path),
+                    "--meta",
+                    str(meta_path),
+                    env=env,
+                )
+            except subprocess.CalledProcessError as exc:
+                self.fail(f"import-archive failed\nstdout:\n{exc.stdout}\nstderr:\n{exc.stderr}")
+            self.assertIn("imported archive into repo: cds-0.1.0.tar.gz", imported.stdout)
+
+            manifest_root = repo_path / "ofpm" / "cds" / "0.1.0"
+            manifest_path = manifest_root / "package.py"
+            payload_archive = manifest_root / "payload" / "cds-0.1.0.tar.gz"
+            self.assertTrue(manifest_path.exists())
+            self.assertTrue(payload_archive.exists())
+
+            package_data = cli.load_package_file(manifest_path)
+            self.assertEqual(package_data["package_id"], "cds")
+            self.assertEqual(package_data["version"], "0.1.0")
+            self.assertEqual(package_data["metadata"]["install_mode"], "archive")
+            self.assertEqual(package_data["profile_id"], "ubuntu-22.04")
+
+            verified = self.run_cli("package", "verify", str(manifest_root), env=env)
+            self.assertIn(" - result: verified", verified.stdout)
+
+            tested = self.run_cli("package", "test", str(manifest_root), env=env)
+            self.assertIn(" - result: passed", tested.stdout)
+
+            installed = self.run_cli(
+                "install",
+                "cds",
+                "--repo",
+                "importtest",
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertIn("installed package: cds 0.1.0", installed.stdout)
+            self.assertIn(f"archive source: {payload_archive}", installed.stdout)
+            self.assertIn("stored archive:", installed.stdout)
+            self.assertIn("archive size:", installed.stdout)
+            self.assertTrue((managed_root / "payloads" / "cds" / "current" / "bashrc.sh").exists())
 
     def test_package_init_verify_test_and_repo_import_package(self) -> None:
         with self.make_tempdir("ofpm-cli-package-") as temp_dir:
@@ -265,11 +406,15 @@ class CliScenarioTests(unittest.TestCase):
             payload_bin.mkdir(parents=True, exist_ok=True)
             script_path = payload_bin / "cds"
             script_path.write_text("#!/usr/bin/env bash\necho cds-fixture\n", encoding="utf-8")
+            script_path.chmod(0o755)
 
             verified = self.run_cli("package", "verify", str(package_root), env=env)
             self.assertIn(" - result: verified", verified.stdout)
 
-            tested = self.run_cli("package", "test", str(package_root), env=env)
+            try:
+                tested = self.run_cli("package", "test", str(package_root), env=env)
+            except subprocess.CalledProcessError as exc:
+                self.fail(f"package test failed\nstdout:\n{exc.stdout}\nstderr:\n{exc.stderr}")
             self.assertIn(" - result: passed", tested.stdout)
 
             imported = self.run_cli(
@@ -530,82 +675,75 @@ class CliScenarioTests(unittest.TestCase):
                     with mock.patch("ofpm.cli.apt_download_package", side_effect=fake_download):
                         with mock.patch("ofpm.apt.run_command_live", side_effect=fake_live):
                             with mock.patch("ofpm.cli.run_command_live", side_effect=fake_live):
-                                build_out = io.StringIO()
-                                with contextlib.redirect_stdout(build_out):
-                                    result = cli.cmd_apt_build_repo(args_build)
-                                self.assertEqual(result, 0)
-                                self.assertIn("built apt local repo: zstd", build_out.getvalue())
-                                self.assertTrue((repo_root / "Packages").exists())
-                                self.assertTrue((repo_root / "Packages.gz").exists())
-                                self.assertTrue((pool_dir / "zstd_1.0.0_amd64.deb").exists())
-                                self.assertTrue((pool_dir / "libzstd1_1.0.0_amd64.deb").exists())
+                                with mock.patch("ofpm.cli.apt_repo_access_issue", return_value=None):
+                                    build_out = io.StringIO()
+                                    with contextlib.redirect_stdout(build_out):
+                                        result = cli.cmd_apt_build_repo(args_build)
+                                    self.assertEqual(result, 0)
+                                    self.assertIn("built apt local repo: zstd", build_out.getvalue())
+                                    self.assertTrue((repo_root / "Packages").exists())
+                                    self.assertTrue((repo_root / "Packages.gz").exists())
+                                    self.assertTrue((pool_dir / "zstd_1.0.0_amd64.deb").exists())
+                                    self.assertTrue((pool_dir / "libzstd1_1.0.0_amd64.deb").exists())
 
-                                activate_out = io.StringIO()
-                                with contextlib.redirect_stdout(activate_out):
-                                    result = cli.cmd_apt_activate(args_activate)
-                                self.assertEqual(result, 0)
-                                self.assertIn("activated apt local repo: zstd-repo", activate_out.getvalue())
-                                self.assertTrue(source_path.exists())
-                                self.assertIn("deb [trusted=yes] file:", source_path.read_text(encoding="utf-8"))
+                                    activate_out = io.StringIO()
+                                    with contextlib.redirect_stdout(activate_out):
+                                        result = cli.cmd_apt_activate(args_activate)
+                                    self.assertEqual(result, 0)
+                                    self.assertIn("activated apt local repo: zstd-repo", activate_out.getvalue())
+                                    self.assertTrue(source_path.exists())
+                                    self.assertIn("deb [trusted=yes] file:", source_path.read_text(encoding="utf-8"))
 
-                                deactivate_out = io.StringIO()
-                                with contextlib.redirect_stdout(deactivate_out):
-                                    result = cli.cmd_apt_deactivate(args_deactivate)
-                                self.assertEqual(result, 0)
-                                self.assertFalse(source_path.exists())
-
-    def test_apt_list_and_show_use_downloaded_snapshots(self) -> None:
-        with self.make_tempdir("ofpm-cli-apt-show-") as temp_dir:
-            scenario_root = Path(temp_dir)
-            env = self.scenario_env(scenario_root)
-            repo_path = scenario_root / "repo"
-            package_root = repo_path / "apt" / "zstd" / "1.0.0"
-            payload_root = package_root / "payload"
-            pool_dir = payload_root / "pool"
-            pool_dir.mkdir(parents=True, exist_ok=True)
-            (pool_dir / "zstd_1.0.0_amd64.deb").write_bytes(b"fake-deb")
-
-            cli.dump_package_file(
-                package_root / "package.py",
-                {
-                    "schema_version": "1",
-                    "provider": "apt",
-                    "package_name": "zstd",
-                    "package_version": "1.0.0",
-                    "requested_package": "zstd",
-                    "with_deps": False,
-                    "context": {"distro": "ubuntu", "release": "22.04", "arch": "amd64"},
-                    "downloaded_at": "2026-05-18T00:00:00+00:00",
-                    "artifact_root": str(payload_root),
-                    "packages": [
-                        {
-                            "name": "zstd",
-                            "version": "1.0.0",
-                            "filename": "zstd_1.0.0_amd64.deb",
-                            "path": str(pool_dir / "zstd_1.0.0_amd64.deb"),
-                            "size": 8,
-                        }
-                    ],
-                    "apt_metadata": {"Package": "zstd", "Version": "1.0.0"},
-                },
-            )
-
-            repos_config = scenario_root / "repos.json"
-            repos_config.write_text(json.dumps({"main": str(repo_path)}, indent=2) + "\n", encoding="utf-8")
-
-            listed = self.run_cli("apt", "list", "zstd", "--repos-config", str(repos_config), env=env)
-            self.assertIn("downloaded apt package snapshots:", listed.stdout)
-            self.assertIn("zstd 1.0.0 [repo=main]", listed.stdout)
-
-            shown = self.run_cli("apt", "show", "zstd", "--repos-config", str(repos_config), env=env)
-            self.assertIn("apt package snapshot: zstd", shown.stdout)
-            self.assertIn(" - version: 1.0.0", shown.stdout)
+                                    deactivate_out = io.StringIO()
+                                    with contextlib.redirect_stdout(deactivate_out):
+                                        result = cli.cmd_apt_deactivate(args_deactivate)
+                                    self.assertEqual(result, 0)
+                                    self.assertFalse(source_path.exists())
 
     def test_dnf_repo_file_text(self) -> None:
         repo_text = cli.dnf_repo_file_text("offline-main", Path("/tmp/offline-main"))
         self.assertIn("[offline-main]", repo_text)
         self.assertIn("baseurl=file:///tmp/offline-main", repo_text)
         self.assertIn("enabled=1", repo_text)
+
+    def test_dnf_activate_and_deactivate_recursive(self) -> None:
+        with self.make_tempdir("ofpm-cli-dnf-recursive-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            repo_base = scenario_root / "rpm"
+            first_repo = repo_base / "app1"
+            second_repo = repo_base / "app2"
+            for repo_root in (first_repo, second_repo):
+                repodata = repo_root / "repodata"
+                repodata.mkdir(parents=True, exist_ok=True)
+                (repodata / "repomd.xml").write_text("<repomd/>", encoding="utf-8")
+
+            repo_files_dir = scenario_root / "yum.repos.d"
+            args_activate = argparse.Namespace(
+                path=str(repo_base),
+                recursive=True,
+                repo_id=None,
+                repo_file=str(repo_files_dir),
+                no_refresh=True,
+            )
+            args_deactivate = argparse.Namespace(
+                path=str(repo_base),
+                recursive=True,
+                repo_id=None,
+                repo_file=str(repo_files_dir),
+            )
+
+            activate_out = io.StringIO()
+            with contextlib.redirect_stdout(activate_out):
+                result = cli.cmd_dnf_activate(args_activate)
+            self.assertEqual(result, 0)
+            created = sorted(path.name for path in repo_files_dir.glob("*.repo"))
+            self.assertEqual(created, ["ofpm-app1.repo", "ofpm-app2.repo"])
+
+            deactivate_out = io.StringIO()
+            with contextlib.redirect_stdout(deactivate_out):
+                result = cli.cmd_dnf_deactivate(args_deactivate)
+            self.assertEqual(result, 0)
+            self.assertEqual(list(repo_files_dir.glob("*.repo")), [])
 
     def test_apt_commands_helper_output(self) -> None:
         args = argparse.Namespace(
@@ -624,6 +762,95 @@ class CliScenarioTests(unittest.TestCase):
         self.assertIn("sudo ofpm apt activate /tmp/zstd-repo --source-name ofpm-zstd", output)
         self.assertIn("sudo ofpm apt deactivate /tmp/zstd-repo --source-name ofpm-zstd", output)
         self.assertIn("dpkg -s zstd >/dev/null 2>&1 || sudo apt install zstd", output)
+
+    def test_apt_commands_helper_defaults_output_to_current_directory(self) -> None:
+        args = argparse.Namespace(
+            package="zstd",
+            version=None,
+            output=None,
+            source_name=None,
+        )
+        captured = io.StringIO()
+        with mock.patch("pathlib.Path.cwd", return_value=Path("/tmp/current-repo")):
+            with contextlib.redirect_stdout(captured):
+                result = cli.cmd_apt_commands(args)
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn(" - output: /tmp/current-repo", output)
+        self.assertIn("ofpm apt build-repo zstd", output)
+        self.assertNotIn("--output", output)
+        self.assertIn("sudo ofpm apt activate /tmp/current-repo --source-name ofpm-zstd", output)
+
+    def test_apt_without_subcommand_prints_help_and_common_flow(self) -> None:
+        with self.make_tempdir("ofpm-cli-apt-help-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            env = self.scenario_env(scenario_root)
+            result = subprocess.run(
+                [sys.executable, "-m", "ofpm", "apt"],
+                cwd=REPO_ROOT,
+                env={**os.environ, **env, "PYTHONDONTWRITEBYTECODE": "1"},
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("usage: ofpm apt", result.stdout)
+            self.assertIn("ofpm apt build-repo zstd", result.stdout)
+            self.assertIn("ofpm apt commands zstd", result.stdout)
+
+    def test_invalid_subcommand_uses_readable_error(self) -> None:
+        with self.make_tempdir("ofpm-cli-bad-command-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            env = self.scenario_env(scenario_root)
+            result = subprocess.run(
+                [sys.executable, "-m", "ofpm", "apt", "nope"],
+                cwd=REPO_ROOT,
+                env={**os.environ, **env, "PYTHONDONTWRITEBYTECODE": "1"},
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("ofpm apt: unable to parse command", result.stderr)
+            self.assertIn("unknown command or value: nope", result.stderr)
+            self.assertIn("available choices: list, show, commands", result.stderr)
+            self.assertIn("help: ofpm apt -h", result.stderr)
+            self.assertNotIn("invalid choice", result.stderr)
+
+    def test_apt_list_and_show_inspect_local_repo_metadata(self) -> None:
+        with self.make_tempdir("ofpm-cli-apt-show-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            env = self.scenario_env(scenario_root)
+            apt_repo = scenario_root / "apt" / "main" / "zstd"
+            pool_dir = apt_repo / "pool"
+            pool_dir.mkdir(parents=True, exist_ok=True)
+            (apt_repo / "Packages").write_text(
+                "\n".join(
+                    [
+                        "Package: zstd",
+                        "Version: 1.0.0",
+                        "Architecture: amd64",
+                        "Filename: pool/zstd_1.0.0_amd64.deb",
+                        "Size: 8",
+                        "Description: fast compression tool",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (apt_repo / "Packages.gz").write_bytes(b"gz")
+            (pool_dir / "zstd_1.0.0_amd64.deb").write_bytes(b"fake-deb")
+
+            listed = self.run_cli("apt", "list", str(apt_repo), env=env)
+            self.assertIn("apt local repo packages:", listed.stdout)
+            self.assertIn("zstd 1.0.0 [arch=amd64] [file=pool/zstd_1.0.0_amd64.deb]", listed.stdout)
+
+            recursive = self.run_cli("apt", "list", str(scenario_root / "apt"), "--recursive", env=env)
+            self.assertIn("repo root count: 1", recursive.stdout)
+            self.assertIn("package count: 1", recursive.stdout)
+
+            shown = self.run_cli("apt", "show", "zstd", str(apt_repo), env=env)
+            self.assertIn("apt package: zstd", shown.stdout)
+            self.assertIn(" - version: 1.0.0", shown.stdout)
+            self.assertIn(f" - repo root: {apt_repo}", shown.stdout)
 
     def test_apt_activate_and_deactivate_recursive(self) -> None:
         with self.make_tempdir("ofpm-cli-apt-recursive-") as temp_dir:
@@ -654,8 +881,9 @@ class CliScenarioTests(unittest.TestCase):
             )
 
             activate_out = io.StringIO()
-            with contextlib.redirect_stdout(activate_out):
-                result = cli.cmd_apt_activate(args_activate)
+            with mock.patch("ofpm.cli.apt_repo_access_issue", return_value=None):
+                with contextlib.redirect_stdout(activate_out):
+                    result = cli.cmd_apt_activate(args_activate)
             self.assertEqual(result, 0)
             created = sorted(path.name for path in sources_dir.glob("*.list"))
             self.assertEqual(created, ["ofpm-curl_payload.list", "ofpm-zstd_payload.list"])
@@ -665,30 +893,6 @@ class CliScenarioTests(unittest.TestCase):
                 result = cli.cmd_apt_deactivate(args_deactivate)
             self.assertEqual(result, 0)
             self.assertEqual(list(sources_dir.glob("*.list")), [])
-
-    def test_apt_download_requires_registered_repo(self) -> None:
-        with self.make_tempdir("ofpm-cli-no-repo-") as temp_dir:
-            scenario_root = Path(temp_dir)
-            env = self.scenario_env(scenario_root)
-            empty_config = scenario_root / "empty-repos.json"
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "ofpm",
-                    "apt",
-                    "download",
-                    "zstd",
-                    "--repos-config",
-                    str(empty_config),
-                ],
-                cwd=REPO_ROOT,
-                env={**os.environ, **env, "PYTHONDONTWRITEBYTECODE": "1"},
-                text=True,
-                capture_output=True,
-            )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(f"no registered repos in {empty_config}", result.stdout)
 
     def test_repo_query_uses_repos_config_and_repo_path(self) -> None:
         with self.make_tempdir("ofpm-cli-repo-query-") as temp_dir:
@@ -714,7 +918,7 @@ class CliScenarioTests(unittest.TestCase):
             repos_config.write_text(
                 json.dumps(
                     {
-                        "alpha": str(alpha_repo),
+                        "alpha": str(alpha_repo / "ofpm"),
                         "beta": str(beta_repo),
                     },
                     indent=2,
@@ -743,6 +947,28 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertIn("repo: beta", selected.stdout)
             self.assertIn("description: beta fixture", selected.stdout)
+
+            direct = self.run_cli(
+                "show",
+                "hello-tool",
+                "--repo-path",
+                str(alpha_repo / "ofpm"),
+                env=env,
+            )
+            self.assertIn("repo path: ", direct.stdout)
+            self.assertIn("description: alpha fixture", direct.stdout)
+
+            custom_native_root = scenario_root / "native-packages"
+            shutil.copytree(alpha_repo / "ofpm", custom_native_root)
+            custom = self.run_cli(
+                "show",
+                "hello-tool",
+                "--repo-path",
+                str(custom_native_root),
+                env=env,
+            )
+            self.assertIn("repo path: ", custom.stdout)
+            self.assertIn("description: alpha fixture", custom.stdout)
 
             installed = self.run_cli(
                 "install",
@@ -819,13 +1045,19 @@ class CliScenarioTests(unittest.TestCase):
             self.assertFalse((installed_source_root / "docker").exists())
             self.assertFalse((installed_source_root / "scripts").exists())
             self.assertFalse((installed_source_root / "repos").exists())
-            self.assertTrue((temp_root / "opt" / "ofpm" / "repos" / "main").exists())
+            self.assertTrue((temp_root / "opt" / "ofpm" / "repos" / "ofpm" / "main").exists())
+            self.assertTrue((temp_root / "opt" / "ofpm" / "repos" / "ofpm" / "main" / "demo" / "1.0.0" / "package.py").exists())
+            self.assertTrue((temp_root / "opt" / "ofpm" / "repos" / "ofpm" / "local-main").exists())
+            self.assertFalse((temp_root / "opt" / "ofpm" / "repos" / "apt").exists())
             installed_repos_config = temp_root / "opt" / "ofpm" / "config" / "repos.json"
             self.assertTrue(installed_repos_config.exists())
             repos_data = json.loads(installed_repos_config.read_text(encoding="utf-8"))
             self.assertEqual(
                 repos_data,
-                {"main": str((temp_root / "opt" / "ofpm" / "repos" / "main").resolve())},
+                {
+                    "main": str((temp_root / "opt" / "ofpm" / "repos" / "ofpm" / "main").resolve()),
+                    "local-main": str((temp_root / "opt" / "ofpm" / "repos" / "ofpm" / "local-main").resolve()),
+                },
             )
 
             self.assertTrue(profile_path.exists())
@@ -880,7 +1112,7 @@ class CliScenarioTests(unittest.TestCase):
             self.assertIn('export OFPM_ROOT="', first_bashrc)
             self.assertIn(f'export PATH="{launcher_path.parent}:$PATH"', first_bashrc)
             self.assertTrue((installed_source_root / "ofpm" / "__main__.py").exists())
-            self.assertTrue((home / ".ofpm" / "repos" / "main").exists())
+            self.assertTrue((home / ".ofpm" / "repos" / "ofpm" / "main").exists())
 
             second = io.StringIO()
             args.force = True

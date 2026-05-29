@@ -95,7 +95,21 @@ def apt_package_manifests(repo_root: Path) -> list[Path]:
     results = sorted(apt_catalog_root(repo_root).glob("*/*/package.py"))
     if results:
         return results
-    return sorted(apt_catalog_root(repo_root).glob("*/*/package.json"))
+    results = sorted(apt_catalog_root(repo_root).glob("*/*/package.json"))
+    if results:
+        return results
+    results = sorted(repo_root.glob("*/*/package.py"))
+    if results:
+        return [
+            manifest_path
+            for manifest_path in results
+            if load_package_file(manifest_path).get("provider") == "apt"
+        ]
+    return [
+        manifest_path
+        for manifest_path in sorted(repo_root.glob("*/*/package.json"))
+        if load_package_file(manifest_path).get("provider") == "apt"
+    ]
 
 
 def find_apt_package_manifest(
@@ -145,6 +159,65 @@ def list_apt_packages(repo_root: Path) -> list[dict[str, Any]]:
             item["distro"],
             item["release"],
             item["arch"],
+        ),
+    )
+
+
+def read_apt_packages_index(local_repo_root: Path) -> list[dict[str, str]]:
+    packages_path = local_repo_root / "Packages"
+    packages_gz_path = local_repo_root / "Packages.gz"
+    if packages_path.exists():
+        text = packages_path.read_text(encoding="utf-8")
+    elif packages_gz_path.exists():
+        with gzip.open(packages_gz_path, "rt", encoding="utf-8") as handle:
+            text = handle.read()
+    else:
+        raise ValueError(f"apt Packages index not found: {local_repo_root}")
+
+    packages: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    current_key: str | None = None
+    for line in text.splitlines():
+        if not line.strip():
+            if current:
+                packages.append(current)
+                current = {}
+                current_key = None
+            continue
+        if line.startswith((" ", "\t")) and current_key:
+            current[current_key] = f"{current[current_key]}\n{line.strip()}"
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        current[key] = value.strip()
+        current_key = key
+    if current:
+        packages.append(current)
+    return packages
+
+
+def list_apt_local_repo_packages(local_repo_root: Path) -> list[dict[str, Any]]:
+    packages: list[dict[str, Any]] = []
+    for item in read_apt_packages_index(local_repo_root):
+        packages.append(
+            {
+                "package_name": item.get("Package", ""),
+                "package_version": item.get("Version", ""),
+                "architecture": item.get("Architecture", ""),
+                "filename": item.get("Filename", ""),
+                "size": item.get("Size", ""),
+                "description": item.get("Description", ""),
+                "repo_root": str(local_repo_root),
+            }
+        )
+    return sorted(
+        packages,
+        key=lambda item: (
+            item["package_name"],
+            item["package_version"],
+            item["architecture"],
+            item["repo_root"],
         ),
     )
 

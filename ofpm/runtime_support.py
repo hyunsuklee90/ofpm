@@ -29,6 +29,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def format_bytes(size: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+
+
 def normalize_mode(mode: str | None, source: Path) -> str:
     if mode:
         return mode
@@ -219,6 +230,156 @@ def install_managed_files_package(
             "executables": executables,
         },
         artifact_ref={"type": "source-artifacts", "paths": source_artifacts},
+    )
+    progress(f"[ofpm] install {package_id}@{version}: recorded installed state")
+    progress(f"  state file: {state_file}")
+    return state
+
+
+def _tracked_files_for_tree(
+    version_root: Path,
+    install_root: str,
+    *,
+    exclude_roots: set[Path] | None = None,
+) -> list[dict[str, Any]]:
+    excluded = {path.resolve() for path in (exclude_roots or set())}
+    tracked_files: list[dict[str, Any]] = []
+    for file_path in sorted(version_root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        resolved = file_path.resolve()
+        if any(resolved == root or root in resolved.parents for root in excluded):
+            continue
+        relpath = file_path.relative_to(version_root).as_posix()
+        tracked_files.append(
+            {
+                "install_path": relative_target_path(install_root, relpath),
+                "sha256": sha256_file(file_path),
+                "size": file_path.stat().st_size,
+                "mode": format(file_path.stat().st_mode & 0o777, "04o"),
+            }
+        )
+    return tracked_files
+
+
+def _current_target_for_extracted_archive(version_root: Path, *, exclude_names: set[str] | None = None) -> Path:
+    excluded = exclude_names or set()
+    children = [entry for entry in version_root.iterdir() if entry.name not in excluded]
+    if len(children) == 1 and children[0].is_dir():
+        return children[0]
+    return version_root
+
+
+def install_archive_extract_package(
+    managed_root: Path,
+    package_manifest: Path,
+    package_data: dict[str, Any],
+    *,
+    root_kind: str,
+    artifact_roots: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    package_id = package_data["package_id"]
+    version = package_data["version"]
+    version_root = managed_root / "payloads" / package_id / version
+    current_link = managed_root / "payloads" / package_id / "current"
+    artifacts_root = version_root / "artifacts"
+
+    progress(f"[ofpm] install {package_id}@{version}: preparing managed root")
+    progress(f"  manifest: {package_manifest}")
+    progress(f"  managed root: {managed_root}")
+    progress(f"  version root: {version_root}")
+    progress(f"  root kind: {root_kind}")
+    progress("  package intent: generic archive extract payload")
+
+    dependency_errors = required_dependency_errors(managed_root, package_data)
+    if dependency_errors:
+        raise ValueError("; ".join(dependency_errors))
+
+    if version_root.exists():
+        raise FileExistsError(f"package version already installed at {version_root}")
+
+    entries = expanded_package_entries(package_data, package_manifest, artifact_roots=artifact_roots)
+    if len(entries) != 1:
+        raise ValueError("archive extract install expects exactly one source artifact")
+
+    archive_source = Path(entries[0]["source"]).resolve()
+    archive_size = archive_source.stat().st_size
+    progress(f"[ofpm] install {package_id}@{version}: selected archive")
+    progress(f"  archive source: {archive_source}")
+    progress(f"  archive size: {archive_size} bytes ({format_bytes(archive_size)})")
+    managed_root.mkdir(parents=True, exist_ok=True)
+    artifacts_root.mkdir(parents=True, exist_ok=False)
+
+    archive_dest = artifacts_root / archive_source.name
+    shutil.copy2(archive_source, archive_dest)
+    progress(f"  stored archive: {archive_dest}")
+
+    with tarfile.open(archive_dest, "r:*") as archive:
+        progress(f"[ofpm] install {package_id}@{version}: extracting archive")
+        archive.extractall(version_root)
+
+    current_target = _current_target_for_extracted_archive(version_root, exclude_names={"artifacts"})
+    reset_current_link(current_link, current_target)
+    progress(f"[ofpm] install {package_id}@{version}: activated current link")
+    progress(f"  current link: {current_link} -> {current_target}")
+
+    executables: list[str] = []
+    bin_dir = current_link / "bin"
+    if bin_dir.exists():
+        for candidate in sorted(bin_dir.iterdir()):
+            if candidate.is_file():
+                executables.append(str(candidate))
+
+    public_executables = expose_public_executables(managed_root, executables)
+    if public_executables:
+        progress(f"[ofpm] install {package_id}@{version}: exposed public executables")
+        for public_link in public_executables:
+            progress(f"  public link: {public_link}")
+
+    tracked_files = _tracked_files_for_tree(version_root, package_data["install_root"], exclude_roots={artifacts_root})
+
+    state = {
+        "schema_version": "1",
+        "updated_at": utc_now(),
+        "install_type": "managed-install",
+        "root_kind": root_kind,
+        "managed_root": str(managed_root),
+        "package": {
+            "package_id": package_id,
+            "package_version": version,
+            "profile_id": package_data["profile_id"],
+            "install_root": package_data["install_root"],
+            "description": package_data.get("metadata", {}).get("description", ""),
+            "env": package_data.get("env", {}),
+            "version_root": str(version_root),
+            "current_path": str(current_link),
+            "executables": executables,
+            "public_executables": public_executables,
+            "tracked_files": tracked_files,
+            "install_mode": "archive",
+            "artifacts": [
+                {
+                    "source": str(archive_source),
+                    "stored_path": str(archive_dest),
+                    "sha256": sha256_file(archive_dest),
+                    "size": archive_dest.stat().st_size,
+                }
+            ],
+        },
+    }
+    state_file = managed_state_file(managed_root, package_id)
+    record_install(
+        managed_root,
+        state,
+        provider="ofpm-native",
+        strategy="archive-extract",
+        managed_objects={
+            "version_root": str(version_root),
+            "current_path": str(current_link),
+            "executables": executables,
+            "artifacts_root": str(artifacts_root),
+        },
+        artifact_ref={"type": "stored-artifact", "paths": state["package"]["artifacts"]},
     )
     progress(f"[ofpm] install {package_id}@{version}: recorded installed state")
     progress(f"  state file: {state_file}")

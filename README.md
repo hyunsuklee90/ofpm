@@ -29,7 +29,8 @@ By default, a system install writes:
 
 - `/opt/ofpm/bin/ofpm`
 - `/opt/ofpm/src/` as the installed `ofpm` source tree
-- `/opt/ofpm/repos/main` as the default local repo root
+- `/opt/ofpm/repos/ofpm/main` as the default native repo root
+- `/opt/ofpm/repos/ofpm/local-main` as the default large local repo root
 - `/opt/ofpm/config/repos.json` as the installed repo config
 - `/etc/profile.d/ofpm.sh` for PATH and `OFPM_ROOT`
 - a source block into `/etc/bash.bashrc` or `/etc/bashrc` for interactive bash shells
@@ -40,7 +41,8 @@ By default, a user install writes:
 
 - `~/.ofpm/bin/ofpm`
 - `~/.ofpm/src/` as the installed `ofpm` source tree
-- `~/.ofpm/repos/main` as the default local repo root
+- `~/.ofpm/repos/ofpm/main` as the default native repo root
+- `~/.ofpm/repos/ofpm/local-main` as the default large local repo root
 - `~/.ofpm/config/repos.json` as the installed repo config
 - an `ofpm` block into `~/.bashrc` for PATH and `OFPM_ROOT`
 
@@ -58,10 +60,12 @@ sudo python3 -m ofpm reinstall-ofpm --root system
 - `docs/md/`: Markdown source documents
 - `docs/html/`: generated HTML docs
 - `docs/build_docs.py`: Markdown-to-HTML doc builder
-- `repos/main/ofpm/<package>/<version>/package.py`: native ofpm package definition
-- `repos/main/ofpm/<package>/<version>/payload/`: native ofpm package payload
-- `repos/main/apt/<package>/<version>/package.py`: downloaded apt snapshot definition
-- `repos/main/apt/<package>/<version>/payload/`: downloaded apt `.deb` payloads and provider metadata
+- `repos/ofpm/main/<package>/<version>/package.py`: native ofpm package definition
+- `repos/ofpm/main/<package>/<version>/payload/`: native ofpm package payload
+- `repos/ofpm/local-main/<package>/<version>/package.py`: large local native package definition
+- `repos/ofpm/local-main/<package>/<version>/payload/`: large local native package payload
+- `repos/apt/main/<package>/<version>/package.py`: downloaded apt snapshot definition
+- `repos/apt/main/<package>/<version>/payload/`: downloaded apt `.deb` payloads and provider metadata
 
 ## Core Concepts
 
@@ -121,24 +125,45 @@ python3 -m ofpm repo import main \
   --profile ubuntu-22.04
 ```
 
-That command copies the source into `repos/main/ofpm/<package>/<version>/payload/` and writes `package.py` beside it.
+That command copies the source into `repos/ofpm/main/<package>/<version>/payload/` and writes `package.py` beside it.
 
-## Provider Repo Workflow
-
-Inspect downloaded apt snapshots when needed:
+Import a release archive into the main repo as a package:
 
 ```bash
-python3 -m ofpm apt show zstd
-python3 -m ofpm apt list
+python3 -m ofpm repo import-archive main \
+  --archive /path/to/cds-0.1.0.tar.gz \
+  --package cds \
+  --version 0.1.0 \
+  --profile ubuntu-22.04
 ```
+
+If release metadata already exists, use `--meta` instead of repeating the fields:
+
+```bash
+python3 -m ofpm repo import-archive main \
+  --archive /path/to/cds-0.1.0.tar.gz \
+  --meta /path/to/ofpm.json
+```
+
+That command copies the archive into `repos/ofpm/main/<package>/<version>/payload/` and writes an archive-extract `package.py` beside it.
+
+## Provider Repo Workflow
 
 Build a local apt repo:
 
 ```bash
-python3 -m ofpm apt build-repo zstd --output ./zstd-repo
-python3 -m ofpm apt source-line ./zstd-repo
-python3 -m ofpm apt commands zstd --output ./zstd-repo
+python3 -m ofpm apt
+mkdir -p ./zstd-repo
+cd ./zstd-repo
+python3 -m ofpm apt build-repo zstd
+python3 -m ofpm apt list .
+python3 -m ofpm apt show zstd .
+python3 -m ofpm apt source-line .
+python3 -m ofpm apt commands zstd
 ```
+
+`build-repo` writes `pool/`, `Packages`, and `Packages.gz` into the current directory by default. Use `--output <path>` only when you want a different repo root.
+`apt list` and `apt show` inspect local apt repo metadata directly; they do not use `ofpm repo` registrations.
 
 Activate it on the target so native `apt` can use it directly:
 
@@ -151,23 +176,33 @@ sudo python3 -m ofpm apt deactivate ./zstd-repo
 If a parent directory contains multiple built apt repos, register or remove them all at once:
 
 ```bash
-sudo python3 -m ofpm apt activate /opt/ofpm/repos/main/apt --recursive
-sudo python3 -m ofpm apt deactivate /opt/ofpm/repos/main/apt --recursive
+sudo python3 -m ofpm apt activate /opt/ofpm/repos/apt/main --recursive
+sudo python3 -m ofpm apt deactivate /opt/ofpm/repos/apt/main --recursive
 ```
 
-For dnf-style targets, write a repo file that points at a prepared local rpm repo:
+For dnf-style targets, build metadata for a prepared rpm directory and then activate it:
 
 ```bash
-sudo python3 -m ofpm dnf activate offline-main /opt/ofpm/repos/rpm/offline-main
+python3 -m ofpm dnf build-repo /opt/ofpm/repos/rpm/offline-main
+sudo python3 -m ofpm dnf activate /opt/ofpm/repos/rpm/offline-main
 sudo dnf install zstd
+sudo python3 -m ofpm dnf deactivate /opt/ofpm/repos/rpm/offline-main
+```
+
+If a parent directory contains multiple built dnf repos, register or remove them all at once:
+
+```bash
+sudo python3 -m ofpm dnf activate /opt/ofpm/repos/rpm --recursive
+sudo python3 -m ofpm dnf deactivate /opt/ofpm/repos/rpm --recursive
 ```
 
 ## Target Usage
 
-Copy `repos/main` to the target machine, then register it:
+Copy `repos/ofpm/main` and any needed local repo directories to the target machine, then register them:
 
 ```bash
-ofpm repo add main /opt/ofpm/repos/main
+ofpm repo add main /opt/ofpm/repos/ofpm/main
+ofpm repo add local-main /opt/ofpm/repos/ofpm/local-main
 ```
 
 Then use `ofpm` native packages:
@@ -224,5 +259,5 @@ python3 docs/build_docs.py
 ## Notes
 
 - target-side commands are intended to remain offline-only
-- builder-side commands such as `repo import`, `apt download`, and `dnf build-repo` prepare repo content
+- builder-side commands such as `repo import`, `apt build-repo`, and `dnf build-repo` prepare repo content
 - `env` prints general managed-root setup; `env package` prints package-specific additions

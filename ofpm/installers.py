@@ -28,6 +28,17 @@ class PackageRuntimeContext:
             artifact_roots=self.artifact_roots,
         )
 
+    def install_archive_extract(self) -> dict[str, Any]:
+        from ofpm.runtime_support import install_archive_extract_package
+
+        return install_archive_extract_package(
+            self.managed_root,
+            self.package_manifest,
+            self.package_data,
+            root_kind=self.root_kind,
+            artifact_roots=self.artifact_roots,
+        )
+
     def remove_managed_payload(self) -> dict[str, Any]:
         return remove_managed_payload(
             self.managed_root,

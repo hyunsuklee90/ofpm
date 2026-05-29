@@ -124,7 +124,6 @@ Rule:
 ### Repo-Specific Notes
 
 - `repos/main/README.md`
-- `repos/recipe-test/README.md`
 - `tests/README.md`
 
 Rule:

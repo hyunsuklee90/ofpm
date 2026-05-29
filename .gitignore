@@ -3,6 +3,8 @@
 .codex/
 __pycache__/
 *.pyc
+*.swp
+.antigravitycli/
 
 dist/
 exports/
@@ -17,6 +19,11 @@ tests/work/
 # Large repo-managed payloads are intentionally not committed.
 repos/main/ofpm/*/*/payload/
 repos/main/apt/*/*/payload/
+repos/ofpm/*/*/*/payload/
+repos/apt/*/*/*/payload/
+repos/apt/*/*/pool/
+repos/apt/*/*/Packages
+repos/apt/*/*/Packages.gz
 !repos/main/ofpm/cds/*/payload/
 !repos/main/ofpm/cds/*/payload/**
 !repos/main/ofpm/node/*/payload/

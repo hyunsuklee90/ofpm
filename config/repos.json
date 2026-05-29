@@ -1,6 +1,7 @@
 {
-  "importtest": "/mnt/d/onedrive/0project/ofpm/tests/work/ofpm-cli-import-x8o2cdtx/repo",
-  "main": "/mnt/d/OneDrive/0project/ofpm/repos/main",
-  "pkgtest": "/mnt/d/onedrive/0project/ofpm/tests/work/ofpm-cli-package-dlf1un0z/repo",
-  "test": "/mnt/d/onedrive/0project/ofpm/tests/work/ofpm-cli-minimal-dwtmaazd/repo"
+  "importtest": "/tmp/ofpm-tests/ofpm-cli-import-ddtyslub/repo",
+  "local-main": "/mnt/d/ofpm/repos/ofpm/local-main",
+  "main": "/mnt/d/OneDrive/0project/ofpm/repos/ofpm/main",
+  "pkgtest": "/tmp/ofpm-tests/ofpm-cli-package-sbyyjlq5/repo",
+  "test": "/tmp/ofpm-tests/ofpm-cli-minimal-_g54o7cp/repo"
 }

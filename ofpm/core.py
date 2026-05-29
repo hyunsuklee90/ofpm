@@ -47,6 +47,8 @@ def inferred_receipt_metadata(installed_state: dict[str, Any]) -> tuple[str, str
     package_id = installed_state["package_id"]
     if package_id in {"node", "node-runtime"}:
         return "ofpm-native", "archive-extract", managed_objects, artifact_ref
+    if package.get("install_mode") == "archive":
+        return "ofpm-native", "archive-extract", managed_objects, artifact_ref
     if package_id in {"ollama", "ollama-runtime"}:
         return "ofpm-native", "managed-runtime", managed_objects, artifact_ref
     if package_id == "pi-agent":
