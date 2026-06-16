@@ -1153,6 +1153,50 @@ class CliScenarioTests(unittest.TestCase):
             self.assertEqual(second, 0)
             self.assertTrue(launcher_path.exists())
 
+    def test_reinstall_ofpm_prefers_current_checkout_over_installed_source_env(self) -> None:
+        with self.make_tempdir("ofpm-reinstall-moved-source-") as temp_dir:
+            temp_root = Path(temp_dir)
+            old_installed_source = temp_root / "old-installed" / "src"
+            moved_source = temp_root / "moved-source"
+            self.make_fake_ofpm_source(old_installed_source)
+            self.make_fake_ofpm_source(moved_source)
+            (moved_source / "README.md").write_text("moved source tree\n", encoding="utf-8")
+
+            home = temp_root / "home" / "tester"
+            bashrc_path = home / ".bashrc"
+            launcher_path = home / ".ofpm" / "bin" / "ofpm"
+
+            args = argparse.Namespace(
+                output=str(launcher_path),
+                python="/usr/bin/python3",
+                source_root=None,
+                root="user",
+                profile_path=str(bashrc_path),
+                bashrc_path=None,
+                symlink_path=None,
+                no_profile=False,
+                no_symlink=False,
+                force=False,
+            )
+
+            with mock.patch.dict(os.environ, {"OFPM_SOURCE_ROOT": str(old_installed_source)}):
+                with mock.patch("pathlib.Path.cwd", return_value=moved_source):
+                    result = cli.cmd_reinstall_cli(args)
+
+            self.assertEqual(result, 0)
+            installed_readme = home / ".ofpm" / "src" / "README.md"
+            self.assertEqual(installed_readme.read_text(encoding="utf-8"), "moved source tree\n")
+
+            repos_config = home / ".ofpm" / "config" / "repos.json"
+            repos_data = json.loads(repos_config.read_text(encoding="utf-8"))
+            self.assertEqual(
+                repos_data,
+                {
+                    "main": str((home / ".ofpm" / "repos" / "ofpm" / "main").resolve()),
+                    "local-main": str((home / ".ofpm" / "repos" / "ofpm" / "local-main").resolve()),
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

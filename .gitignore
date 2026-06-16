@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.swp
 .antigravitycli/
+docker/temp_config/
 
 dist/
 exports/
@@ -24,9 +25,5 @@ repos/apt/*/*/*/payload/
 repos/apt/*/*/pool/
 repos/apt/*/*/Packages
 repos/apt/*/*/Packages.gz
-!repos/main/ofpm/cds/*/payload/
-!repos/main/ofpm/cds/*/payload/**
-!repos/main/ofpm/node/*/payload/
-!repos/main/ofpm/node/*/payload/**
-!repos/main/ofpm/pi-agent/*/payload/
-!repos/main/ofpm/pi-agent/*/payload/**
+!repos/ofpm/main/*/*/payload/
+!repos/ofpm/main/*/*/payload/**

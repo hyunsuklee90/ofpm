@@ -99,6 +99,19 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def is_ofpm_source_root(path: Path) -> bool:
+    return (path / "ofpm" / "__main__.py").is_file() and (path / "ofpm" / "cli.py").is_file()
+
+
+def install_source_root(explicit_source_root: str | None = None) -> Path:
+    if explicit_source_root:
+        return Path(explicit_source_root).expanduser().resolve()
+    cwd = Path.cwd().resolve()
+    if is_ofpm_source_root(cwd):
+        return cwd
+    return repo_root()
+
+
 def managed_source_root(root_kind: str) -> Path:
     return managed_root(root_kind) / "src"
 
@@ -1756,7 +1769,7 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
     output_path = Path(raw_output).expanduser().resolve() if raw_output else default_ofpm_launcher_path(root_kind)
     install_home = install_home_root(root_kind, output_path)
     python_executable = args.python or sys.executable
-    source_root = Path(args.source_root).expanduser().resolve() if args.source_root else repo_root()
+    source_root = install_source_root(args.source_root)
     installed_source_root = install_home / "src"
     installed_repo_root = install_home / "repos" / "ofpm" / "main"
     installed_repos_config = install_home / "config" / "repos.json"
