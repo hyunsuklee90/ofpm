@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OFPM_SRC="/mnt/d/OneDrive/0project/ofpm"
 SHARED_DIR="/home/hyunsuk/shared"
 OFPM_ARTIFACTS="/mnt/d/ofpm/artifacts"
+ARCHIVE_REPOS="/mnt/d/OneDrive/Archive/ofpm/repos"
 OFFLINE_NETWORK="offline-internal-net"
 ONLINE_NETWORK="online-bridge-net"
 
@@ -23,12 +24,14 @@ ensure_networks() {
 }
 
 ensure_images() {
-  docker image inspect online:ubuntu24.04 >/dev/null 2>&1 || docker build -t online:ubuntu24.04 -f "${ROOT_DIR}/docker/online/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
-  docker image inspect online:rocky9.4 >/dev/null 2>&1 || docker build -t online:rocky9.4 -f "${ROOT_DIR}/docker/online/Dockerfile.rocky9.4" "${ROOT_DIR}"
-  docker image inspect online:centos7 >/dev/null 2>&1 || docker build -t online:centos7 -f "${ROOT_DIR}/docker/online/Dockerfile.centos7" "${ROOT_DIR}"
-  docker image inspect offline:ubuntu24.04 >/dev/null 2>&1 || docker build -t offline:ubuntu24.04 -f "${ROOT_DIR}/docker/offline/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
-  docker image inspect offline:rocky9.4 >/dev/null 2>&1 || docker build -t offline:rocky9.4 -f "${ROOT_DIR}/docker/offline/Dockerfile.rocky9.4" "${ROOT_DIR}"
-  docker image inspect offline:centos7 >/dev/null 2>&1 || docker build -t offline:centos7 -f "${ROOT_DIR}/docker/offline/Dockerfile.centos7" "${ROOT_DIR}"
+  local config_dir="${ROOT_DIR}/docker/temp_config"
+  mkdir -p "${config_dir}"
+  docker image inspect online:ubuntu24.04 >/dev/null 2>&1 || docker --config "${config_dir}" build -t online:ubuntu24.04 -f "${ROOT_DIR}/docker/online/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
+  docker image inspect online:rocky9.4 >/dev/null 2>&1 || docker --config "${config_dir}" build -t online:rocky9.4 -f "${ROOT_DIR}/docker/online/Dockerfile.rocky9.4" "${ROOT_DIR}"
+  docker image inspect online:centos7 >/dev/null 2>&1 || docker --config "${config_dir}" build -t online:centos7 -f "${ROOT_DIR}/docker/online/Dockerfile.centos7" "${ROOT_DIR}"
+  docker image inspect offline:ubuntu24.04 >/dev/null 2>&1 || docker --config "${config_dir}" build -t offline:ubuntu24.04 -f "${ROOT_DIR}/docker/offline/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
+  docker image inspect offline:rocky9.4 >/dev/null 2>&1 || docker --config "${config_dir}" build -t offline:rocky9.4 -f "${ROOT_DIR}/docker/offline/Dockerfile.rocky9.4" "${ROOT_DIR}"
+  docker image inspect offline:centos7 >/dev/null 2>&1 || docker --config "${config_dir}" build -t offline:centos7 -f "${ROOT_DIR}/docker/offline/Dockerfile.centos7" "${ROOT_DIR}"
 }
 
 create_container() {
@@ -44,11 +47,13 @@ create_container() {
     -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
     -v "${SHARED_DIR}:/home/hyunsuk/shared" \
     -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
+    -v "${ARCHIVE_REPOS}:/home/hyunsuk/repos" \
     "${image}" >/dev/null
 }
 
 mkdir -p "${SHARED_DIR}"
 mkdir -p "${OFPM_ARTIFACTS}"
+mkdir -p "${ARCHIVE_REPOS}"
 ensure_networks
 ensure_images
 

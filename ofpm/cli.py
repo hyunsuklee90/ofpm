@@ -48,6 +48,7 @@ from ofpm.local_package import (
 )
 from ofpm.modules import render_package_modulefile, render_package_shell_env
 from ofpm.plugins import attach_plugin, detach_plugin, list_attached_plugins, refresh_plugins
+from ofpm.prepare import get_preparer, list_preparers, prepare_package
 from ofpm.repo_data import (
     find_installed_state,
     installed_states,
@@ -1246,6 +1247,94 @@ def cmd_package_init(args: argparse.Namespace) -> int:
     print(f" - manifest: {package_root / 'package.py'}")
     print(f" - payload root: {package_root / 'payload'}")
     return 0
+
+
+def resolve_prepare_repo_dir(args: argparse.Namespace) -> Path | None:
+    if getattr(args, "repo_dir", None):
+        return Path(args.repo_dir).expanduser().resolve()
+    if getattr(args, "repo", None):
+        return resolve_registered_repo_path(args.repo.strip().lower(), args)
+    return None
+
+
+def cmd_prepare_list(args: argparse.Namespace) -> int:
+    rows = list_preparers()
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                [
+                    {
+                        "id": item.id,
+                        "source": item.source,
+                        "output_package": item.output_package,
+                        "description": item.description,
+                    }
+                    for item in rows
+                ],
+                indent=2,
+            )
+        )
+        return 0
+    print(f"{'ID':<10} {'Source':<10} {'Output package':<18} Description")
+    for item in rows:
+        print(f"{item.id:<10} {item.source:<10} {item.output_package:<18} {item.description}")
+    return 0
+
+
+def cmd_prepare_versions(args: argparse.Namespace) -> int:
+    try:
+        preparer = get_preparer(args.preparer_id)
+        versions = preparer.list_versions()
+    except (OSError, ValueError) as exc:
+        print(str(exc))
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(versions, indent=2))
+        return 0
+    for version in versions:
+        print(version)
+    return 0
+
+
+def cmd_prepare_run(args: argparse.Namespace) -> int:
+    try:
+        repo_dir = resolve_prepare_repo_dir(args)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+    work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else None
+    if repo_dir is None and work_dir is None:
+        print("prepare needs an output target: use --repo <id>, --repo-dir <path>, or --work-dir <path>")
+        return 1
+    try:
+        prepared = prepare_package(
+            args.preparer_id,
+            args.version,
+            repo_dir=repo_dir,
+            work_dir=work_dir,
+            replace=args.replace,
+            progress=print,
+        )
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        print(str(exc))
+        return 1
+    print(f"prepared package: {prepared.package_id}")
+    print(f" - version: {prepared.version}")
+    print(f" - source: {prepared.source}")
+    if prepared.sha256:
+        print(f" - sha256: {prepared.sha256}")
+    if prepared.package_root.exists():
+        print(f" - package root: {prepared.package_root}")
+    if prepared.repo_package_root is not None:
+        print(f" - repo package root: {prepared.repo_package_root}")
+    return 0
+
+
+def cmd_prepare_item(args: argparse.Namespace) -> int:
+    if args.action == "list":
+        return cmd_prepare_versions(args)
+    args.version = args.action
+    return cmd_prepare_run(args)
 
 
 def cmd_repo_import_package(args: argparse.Namespace) -> int:
@@ -2618,6 +2707,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 common builder-side flow:
   ofpm repo import main --path /path/to/payload --package <package> --version <version>
+  ofpm prepare list
+  ofpm prepare ollama latest --repo main
   ofpm apt build-repo <deb-package>
   ofpm apt list <apt-repo-path> --recursive
 
@@ -2817,6 +2908,31 @@ Use `ofpm <command> -h` for command-specific options.""",
     package_init_parser.add_argument("--description", help="short package description")
     package_init_parser.add_argument("--force", action="store_true", help="overwrite an existing recipe")
     package_init_parser.set_defaults(func=cmd_package_init)
+
+    prepare_parser = subparsers.add_parser("prepare", help="prepare external artifacts for an offline repo")
+    prepare_subparsers = prepare_parser.add_subparsers(
+        dest="prepare_command",
+        required=True,
+        parser_class=FriendlyArgumentParser,
+    )
+
+    prepare_list_parser = prepare_subparsers.add_parser("list", help="list artifact preparers")
+    prepare_list_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    prepare_list_parser.set_defaults(func=cmd_prepare_list)
+
+    def add_prepare_output_options(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument("--repo", help="registered repo id to import into")
+        command_parser.add_argument("--repo-dir", help="repo snapshot directory to import into directly")
+        command_parser.add_argument("--repos-config", help="use a specific repo registry JSON file")
+        command_parser.add_argument("--work-dir", help="keep prepared package staging under this directory")
+        command_parser.add_argument("--replace", action="store_true", help="replace an existing package version")
+
+    for preparer_id in ["ollama", "pi-agent"]:
+        item_parser = prepare_subparsers.add_parser(preparer_id, help=f"prepare {preparer_id} artifacts")
+        item_parser.add_argument("action", help="`list`, `latest`, or a concrete version")
+        item_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON for `list`")
+        add_prepare_output_options(item_parser)
+        item_parser.set_defaults(func=cmd_prepare_item, preparer_id=preparer_id)
 
     repo_parser = subparsers.add_parser("repo", help="register and inspect offline repo snapshots")
     repo_subparsers = repo_parser.add_subparsers(

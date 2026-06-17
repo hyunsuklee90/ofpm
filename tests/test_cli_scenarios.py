@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest import mock
 
 from ofpm import cli
+from ofpm.prepare import get_preparer
+from ofpm.repo_data import native_repo_package_root
 from ofpm.state_db import managed_state_file
 
 
@@ -375,6 +377,46 @@ class CliScenarioTests(unittest.TestCase):
             self.assertIn("stored archive:", installed.stdout)
             self.assertIn("archive size:", installed.stdout)
             self.assertTrue((managed_root / "payloads" / "cds" / "current" / "bashrc.sh").exists())
+
+    def test_package_test_extracts_tar_zst_archive(self) -> None:
+        if shutil.which("tar") is None or shutil.which("zstd") is None:
+            self.skipTest("tar --zstd support is required")
+        with self.make_tempdir("ofpm-cli-tar-zst-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            source_path = scenario_root / "src" / "demo-1.0.0"
+            package_root = scenario_root / "package"
+            payload_root = package_root / "payload"
+            archive_path = payload_root / "demo-1.0.0.tar.zst"
+
+            (source_path / "bin").mkdir(parents=True, exist_ok=True)
+            executable = source_path / "bin" / "demo"
+            executable.write_text("#!/usr/bin/env sh\nprintf demo\\n\n", encoding="utf-8")
+            executable.chmod(0o755)
+            payload_root.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["tar", "--zstd", "-cf", str(archive_path), "-C", str(source_path.parent), source_path.name],
+                check=True,
+            )
+
+            cli.dump_package_file(
+                package_root / "package.py",
+                {
+                    "schema_version": "1",
+                    "package_id": "demo-zst",
+                    "version": "1.0.0",
+                    "target": {"os": "linux", "distro": "", "release": "", "arch": "amd64"},
+                    "install_root": "payloads/demo-zst/1.0.0",
+                    "depends": [],
+                    "plugins": [],
+                    "plugin_data": [],
+                    "metadata": {"install_mode": "archive"},
+                    "env": {},
+                    "files": [{"source": "payload/demo-1.0.0.tar.zst", "target": "demo-1.0.0.tar.zst"}],
+                },
+            )
+
+            tested = self.run_cli("package", "test", str(package_root))
+            self.assertIn(" - result: passed", tested.stdout)
 
     def test_package_init_verify_test_and_repo_import_package(self) -> None:
         with self.make_tempdir("ofpm-cli-package-") as temp_dir:
@@ -1196,6 +1238,111 @@ class CliScenarioTests(unittest.TestCase):
                     "local-main": str((home / ".ofpm" / "repos" / "ofpm" / "local-main").resolve()),
                 },
             )
+
+    def test_prepare_list_shows_supported_preparers(self) -> None:
+        result = self.run_cli("prepare", "list")
+        self.assertIn("ollama", result.stdout)
+        self.assertIn("ollama-runtime", result.stdout)
+        self.assertIn("pi-agent", result.stdout)
+
+    def test_prepare_ollama_imports_runtime_package_into_repo(self) -> None:
+        with self.make_tempdir("ofpm-prepare-ollama-") as temp_dir:
+            temp_root = Path(temp_dir)
+            repo_root = temp_root / "repo"
+            work_root = temp_root / "work"
+
+            def fake_fetch(url: str):
+                if url.endswith("/releases"):
+                    return [{"tag_name": "v0.30.8", "draft": False}]
+                if url.endswith("/releases/latest"):
+                    return {"tag_name": "v0.30.8"}
+                if url.endswith("/releases/tags/v0.30.8"):
+                    return {
+                        "assets": [
+                            {
+                                "name": "ollama-linux-amd64.tar.zst",
+                                "browser_download_url": "https://example.invalid/ollama-linux-amd64.tar.zst",
+                            }
+                        ]
+                    }
+                raise AssertionError(url)
+
+            def fake_download(url: str, path: Path) -> None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fake ollama archive\n")
+
+            preparer = get_preparer("ollama")
+            versions = preparer.list_versions(fetch_json=fake_fetch)
+            self.assertEqual(versions, ["0.30.8"])
+            prepared = preparer.prepare(
+                "latest",
+                repo_dir=repo_root,
+                work_dir=work_root,
+                fetch_json=fake_fetch,
+                download_file=fake_download,
+            )
+
+            dest = native_repo_package_root(repo_root) / "ollama-runtime" / "0.30.8"
+            self.assertEqual(prepared.repo_package_root, dest)
+            self.assertTrue((dest / "package.py").exists())
+            self.assertTrue((dest / "payload" / "ollama-linux-amd64.tar.zst").exists())
+
+    def test_prepare_pi_agent_imports_npm_bundle_into_repo(self) -> None:
+        with self.make_tempdir("ofpm-prepare-pi-agent-") as temp_dir:
+            temp_root = Path(temp_dir)
+            repo_root = temp_root / "repo"
+            work_root = temp_root / "work"
+
+            def fake_fetch(url: str):
+                return {
+                    "dist-tags": {"latest": "1.2.3"},
+                    "versions": {"1.2.2": {}, "1.2.3": {}},
+                }
+
+            def fake_run(command: list[str]) -> None:
+                prefix = Path(command[command.index("--prefix") + 1])
+                cli_path = prefix / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
+                cli_path.parent.mkdir(parents=True, exist_ok=True)
+                cli_path.write_text("console.log('pi')\n", encoding="utf-8")
+
+            preparer = get_preparer("pi-agent")
+            versions = preparer.list_versions(fetch_json=fake_fetch)
+            self.assertEqual(versions, ["1.2.3", "1.2.2"])
+            prepared = preparer.prepare(
+                "latest",
+                repo_dir=repo_root,
+                work_dir=work_root,
+                fetch_json=fake_fetch,
+                run_command=fake_run,
+            )
+
+            dest = native_repo_package_root(repo_root) / "pi-agent" / "1.2.3"
+            self.assertEqual(prepared.repo_package_root, dest)
+            self.assertTrue((dest / "package.py").exists())
+            self.assertTrue((dest / "payload" / "pi-agent-1.2.3.tar.gz").exists())
+
+    def test_system_ownership_normalization_chowns_tree_and_symlinks(self) -> None:
+        with self.make_tempdir("ofpm-system-ownership-") as temp_dir:
+            root = Path(temp_dir) / "payload"
+            nested = root / "nested"
+            nested.mkdir(parents=True)
+            file_path = nested / "file.txt"
+            file_path.write_text("payload\n", encoding="utf-8")
+            link_path = root / "current"
+            link_path.symlink_to(nested)
+
+            from ofpm.runtime_support import normalize_system_ownership
+
+            with mock.patch("os.geteuid", return_value=0):
+                with mock.patch("os.chown") as chown_mock, mock.patch("os.lchown") as lchown_mock:
+                    normalize_system_ownership(root, root_kind="system")
+
+            chowned_paths = {Path(call.args[0]) for call in chown_mock.call_args_list}
+            self.assertIn(root, chowned_paths)
+            self.assertIn(nested, chowned_paths)
+            self.assertIn(file_path, chowned_paths)
+            lchowned_paths = {Path(call.args[0]) for call in lchown_mock.call_args_list}
+            self.assertIn(link_path, lchowned_paths)
 
 
 if __name__ == "__main__":

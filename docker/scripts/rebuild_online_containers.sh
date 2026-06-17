@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OFPM_SRC="/mnt/d/OneDrive/0project/ofpm"
 SHARED_DIR="/home/hyunsuk/shared"
 OFPM_ARTIFACTS="/mnt/d/ofpm/artifacts"
+ARCHIVE_REPOS="/mnt/d/OneDrive/Archive/ofpm/repos"
 NETWORK_NAME="online-bridge-net"
 
 containers=(
@@ -33,10 +34,13 @@ docker network create "${NETWORK_NAME}" >/dev/null
 
 mkdir -p "${SHARED_DIR}"
 mkdir -p "${OFPM_ARTIFACTS}"
+mkdir -p "${ARCHIVE_REPOS}"
+CONFIG_DIR="${ROOT_DIR}/docker/temp_config"
+mkdir -p "${CONFIG_DIR}"
 
-docker build -t online:ubuntu24.04 -f "${ROOT_DIR}/docker/online/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
-docker build -t online:rocky9.4 -f "${ROOT_DIR}/docker/online/Dockerfile.rocky9.4" "${ROOT_DIR}"
-docker build -t online:centos7 -f "${ROOT_DIR}/docker/online/Dockerfile.centos7" "${ROOT_DIR}"
+docker --config "${CONFIG_DIR}" build -t online:ubuntu24.04 -f "${ROOT_DIR}/docker/online/Dockerfile.ubuntu24.04" "${ROOT_DIR}"
+docker --config "${CONFIG_DIR}" build -t online:rocky9.4 -f "${ROOT_DIR}/docker/online/Dockerfile.rocky9.4" "${ROOT_DIR}"
+docker --config "${CONFIG_DIR}" build -t online:centos7 -f "${ROOT_DIR}/docker/online/Dockerfile.centos7" "${ROOT_DIR}"
 
 docker run -d \
   --name online-ubuntu \
@@ -44,6 +48,7 @@ docker run -d \
   -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
   -v "${SHARED_DIR}:/home/hyunsuk/shared" \
   -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
+  -v "${ARCHIVE_REPOS}:/home/hyunsuk/repos" \
   online:ubuntu24.04 >/dev/null
 
 docker run -d \
@@ -52,6 +57,7 @@ docker run -d \
   -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
   -v "${SHARED_DIR}:/home/hyunsuk/shared" \
   -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
+  -v "${ARCHIVE_REPOS}:/home/hyunsuk/repos" \
   online:rocky9.4 >/dev/null
 
 docker run -d \
@@ -60,6 +66,7 @@ docker run -d \
   -v "${OFPM_SRC}:/home/hyunsuk/ofpm" \
   -v "${SHARED_DIR}:/home/hyunsuk/shared" \
   -v "${OFPM_ARTIFACTS}:/home/hyunsuk/ofpm-artifacts" \
+  -v "${ARCHIVE_REPOS}:/home/hyunsuk/repos" \
   online:centos7 >/dev/null
 
 echo "rebuilt online containers:"

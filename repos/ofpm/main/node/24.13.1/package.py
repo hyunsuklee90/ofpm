@@ -9,6 +9,7 @@ from ofpm.runtime_support import (
     detect_single_subdir,
     expose_public_executables,
     expanded_package_entries,
+    normalize_system_ownership,
     record_install,
     remove_managed_payload,
     reset_current_link,
@@ -60,12 +61,15 @@ class Recipe(OfpmRecipe):
         tarball_source = Path(entries[0]["source"]).resolve()
         tarball_dest = artifacts_root / tarball_source.name
         shutil.copy2(tarball_source, tarball_dest)
+        normalize_system_ownership(tarball_dest, root_kind=runtime.root_kind)
         with tarfile.open(tarball_dest, "r:xz") as tar:
             tar.extractall(version_root)
+        normalize_system_ownership(version_root, root_kind=runtime.root_kind)
 
         extracted_root = detect_single_subdir(version_root, exclude_names={"artifacts"})
         current_link = runtime.managed_root / "payloads" / package_id / "current"
         reset_current_link(current_link, extracted_root)
+        normalize_system_ownership(current_link, root_kind=runtime.root_kind)
         executables = [
             str(current_link / "bin" / "node"),
             str(current_link / "bin" / "npm"),

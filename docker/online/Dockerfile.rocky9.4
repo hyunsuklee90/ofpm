@@ -30,7 +30,7 @@ RUN dnf install -y \
 RUN useradd -m -s /bin/bash -G wheel hyunsuk \
     && echo 'hyunsuk ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/hyunsuk \
     && chmod 0440 /etc/sudoers.d/hyunsuk \
-    && mkdir -p /home/hyunsuk/.local/bin /home/hyunsuk/bin /home/hyunsuk/.cache /home/hyunsuk/shared \
+    && mkdir -p /home/hyunsuk/.local/bin /home/hyunsuk/bin /home/hyunsuk/.cache /home/hyunsuk/shared /home/hyunsuk/repos \
     && chown -R hyunsuk:hyunsuk /home/hyunsuk
 
 USER hyunsuk

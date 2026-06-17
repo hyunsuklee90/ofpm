@@ -71,6 +71,25 @@ def public_bin_dir(managed_root: Path) -> Path:
     return managed_root / "bin"
 
 
+def normalize_system_ownership(path: Path, *, root_kind: str) -> None:
+    geteuid = getattr(os, "geteuid", None)
+    if root_kind != "system" or not callable(geteuid) or geteuid() != 0:
+        return
+
+    def chown_current(item: Path) -> None:
+        if item.is_symlink():
+            os.lchown(item, 0, 0)
+            return
+        os.chown(item, 0, 0)
+
+    if not path.exists() and not path.is_symlink():
+        return
+    chown_current(path)
+    if path.is_dir() and not path.is_symlink():
+        for child in sorted(path.rglob("*")):
+            chown_current(child)
+
+
 def expose_public_executables(managed_root: Path, executables: list[str]) -> list[str]:
     bin_dir = public_bin_dir(managed_root)
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -177,6 +196,7 @@ def install_managed_files_package(
         shutil.copy2(source, destination)
         mode = normalize_mode(item.get("mode"), source)
         os.chmod(destination, int(mode, 8))
+        normalize_system_ownership(destination, root_kind=root_kind)
         tracked_files.append(
             {
                 "install_path": relative_target_path(package_data["install_root"], target_relpath),
@@ -189,6 +209,7 @@ def install_managed_files_package(
             executables.append(str(current_link / target_relpath))
 
     reset_current_link(current_link, version_root)
+    normalize_system_ownership(current_link, root_kind=root_kind)
     progress(f"[ofpm] install {package_id}@{version}: activated current link")
     progress(f"  current link: {current_link} -> {version_root}")
     public_executables = expose_public_executables(managed_root, executables)
@@ -270,6 +291,18 @@ def _current_target_for_extracted_archive(version_root: Path, *, exclude_names: 
     return version_root
 
 
+def extract_archive(archive_path: Path, destination: Path) -> None:
+    name = archive_path.name
+    if name.endswith((".tar.zst", ".tzst")):
+        subprocess.run(
+            ["tar", "--zstd", "-xf", str(archive_path), "-C", str(destination)],
+            check=True,
+        )
+        return
+    with tarfile.open(archive_path, "r:*") as archive:
+        archive.extractall(destination)
+
+
 def install_archive_extract_package(
     managed_root: Path,
     package_manifest: Path,
@@ -312,14 +345,16 @@ def install_archive_extract_package(
 
     archive_dest = artifacts_root / archive_source.name
     shutil.copy2(archive_source, archive_dest)
+    normalize_system_ownership(archive_dest, root_kind=root_kind)
     progress(f"  stored archive: {archive_dest}")
 
-    with tarfile.open(archive_dest, "r:*") as archive:
-        progress(f"[ofpm] install {package_id}@{version}: extracting archive")
-        archive.extractall(version_root)
+    progress(f"[ofpm] install {package_id}@{version}: extracting archive")
+    extract_archive(archive_dest, version_root)
+    normalize_system_ownership(version_root, root_kind=root_kind)
 
     current_target = _current_target_for_extracted_archive(version_root, exclude_names={"artifacts"})
     reset_current_link(current_link, current_target)
+    normalize_system_ownership(current_link, root_kind=root_kind)
     progress(f"[ofpm] install {package_id}@{version}: activated current link")
     progress(f"  current link: {current_link} -> {current_target}")
 
