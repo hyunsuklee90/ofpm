@@ -227,6 +227,84 @@ class CliScenarioTests(unittest.TestCase):
             )
             self.assertNotIn("hello-tool 1.0.0", listed_again.stdout)
 
+    def test_remove_and_reinstall_purge_package_config_only_when_requested(self) -> None:
+        with self.make_tempdir("ofpm-cli-purge-") as temp_dir:
+            scenario_root = Path(temp_dir)
+            env = self.scenario_env(scenario_root)
+            managed_root = scenario_root / "rootfs" / "home" / "tester" / ".ofpm"
+            config_file = managed_root / "config" / "hello-tool" / "settings.conf"
+
+            self.run_cli(
+                "install",
+                "hello-tool",
+                "--repo-path",
+                str(FIXTURE_REPO),
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text("keep=yes\n", encoding="utf-8")
+
+            removed = self.run_cli(
+                "remove",
+                "hello-tool",
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertIn(" - purge config: no", removed.stdout)
+            self.assertTrue(config_file.exists())
+
+            self.run_cli(
+                "reinstall",
+                "hello-tool",
+                "--repo-path",
+                str(FIXTURE_REPO),
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertTrue(config_file.exists())
+
+            purged_remove = self.run_cli(
+                "remove",
+                "hello-tool",
+                "--purge",
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertIn(" - purge config: yes", purged_remove.stdout)
+            self.assertIn("removed config:", purged_remove.stdout)
+            self.assertFalse(config_file.exists())
+
+            self.run_cli(
+                "install",
+                "hello-tool",
+                "--repo-path",
+                str(FIXTURE_REPO),
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text("reset=yes\n", encoding="utf-8")
+
+            reinstalled = self.run_cli(
+                "reinstall",
+                "hello-tool",
+                "--purge",
+                "--repo-path",
+                str(FIXTURE_REPO),
+                "--root-path",
+                str(managed_root),
+                env=env,
+            )
+            self.assertIn(" - purge config: yes", reinstalled.stdout)
+            self.assertIn("removed config:", reinstalled.stdout)
+            self.assertFalse(config_file.exists())
+
     def test_repo_import_emit_package_py_layout(self) -> None:
         with self.make_tempdir("ofpm-cli-import-") as temp_dir:
             scenario_root = Path(temp_dir)
@@ -1063,6 +1141,7 @@ class CliScenarioTests(unittest.TestCase):
                 profile_path=str(profile_path),
                 bashrc_path=str(bashrc_path),
                 symlink_path=None,
+                purge=False,
                 no_profile=False,
                 no_symlink=False,
                 force=False,
@@ -1117,6 +1196,7 @@ class CliScenarioTests(unittest.TestCase):
             self.assertIn(f" - shell hook: {profile_path}", output)
             self.assertIn(f" - bashrc hook: {bashrc_path}", output)
             self.assertIn(" - command link: disabled", output)
+            self.assertIn(" - repo config action: created", output)
 
     def test_install_ofpm_user_updates_single_bashrc_block(self) -> None:
         with self.make_tempdir("ofpm-install-user-") as temp_dir:
@@ -1138,6 +1218,7 @@ class CliScenarioTests(unittest.TestCase):
                 profile_path=str(bashrc_path),
                 bashrc_path=None,
                 symlink_path=None,
+                purge=False,
                 no_profile=False,
                 no_symlink=False,
                 force=False,
@@ -1184,6 +1265,7 @@ class CliScenarioTests(unittest.TestCase):
                 profile_path=str(bashrc_path),
                 bashrc_path=None,
                 symlink_path=None,
+                purge=False,
                 no_profile=False,
                 no_symlink=False,
                 force=False,
@@ -1191,9 +1273,28 @@ class CliScenarioTests(unittest.TestCase):
 
             first = cli.cmd_install_cli(args)
             self.assertEqual(first, 0)
+            repos_config = home / ".ofpm" / "config" / "repos.json"
+            repos_config.write_text(
+                json.dumps({"custom": "/repo/snapshot"}, indent=2) + "\n",
+                encoding="utf-8",
+            )
             second = cli.cmd_reinstall_cli(args)
             self.assertEqual(second, 0)
             self.assertTrue(launcher_path.exists())
+            repos_data = json.loads(repos_config.read_text(encoding="utf-8"))
+            self.assertEqual(repos_data, {"custom": "/repo/snapshot"})
+
+            args.purge = True
+            third = cli.cmd_reinstall_cli(args)
+            self.assertEqual(third, 0)
+            purged_repos_data = json.loads(repos_config.read_text(encoding="utf-8"))
+            self.assertEqual(
+                purged_repos_data,
+                {
+                    "main": str((home / ".ofpm" / "repos" / "ofpm" / "main").resolve()),
+                    "local-main": str((home / ".ofpm" / "repos" / "ofpm" / "local-main").resolve()),
+                },
+            )
 
     def test_reinstall_ofpm_prefers_current_checkout_over_installed_source_env(self) -> None:
         with self.make_tempdir("ofpm-reinstall-moved-source-") as temp_dir:
@@ -1216,6 +1317,7 @@ class CliScenarioTests(unittest.TestCase):
                 profile_path=str(bashrc_path),
                 bashrc_path=None,
                 symlink_path=None,
+                purge=False,
                 no_profile=False,
                 no_symlink=False,
                 force=False,

@@ -63,7 +63,7 @@ from ofpm.repo_data import (
     save_repos_config,
     verify_package_sources,
 )
-from ofpm.runtime_support import remove_managed_payload, verify_managed_files_install
+from ofpm.runtime_support import purge_installed_config, remove_managed_payload, verify_managed_files_install
 from ofpm.state_db import (
     list_ownership_entries,
     list_receipts,
@@ -1441,6 +1441,8 @@ def remove_installed_package(
     managed: Path,
     installed: dict[str, Any],
     args: argparse.Namespace | None = None,
+    *,
+    purge: bool = False,
 ) -> dict[str, Any] | None:
     manifest_entry = find_registered_package_manifest(args, installed["package_id"], installed["package_version"])
     if manifest_entry is not None:
@@ -1454,9 +1456,12 @@ def remove_installed_package(
             root_kind=installed.get("selected_root_kind", "user"),
         )
         if result is not None:
+            result["purged_config_paths"] = purge_installed_config(managed, installed) if purge else []
             return result
     if installed["raw"].get("install_type") == "managed-install" and installed["raw"]["package"].get("version_root"):
-        return remove_managed_payload(managed, installed)
+        result = remove_managed_payload(managed, installed)
+        result["purged_config_paths"] = purge_installed_config(managed, installed) if purge else []
+        return result
     return None
 
 
@@ -1509,11 +1514,14 @@ def cmd_reinstall(args: argparse.Namespace) -> int:
         print(f" - existing version: {installed['package_version']}")
         print(f" - existing state: {installed['state_path']}")
         print(" - action: remove existing install before fresh install")
-        result = remove_installed_package(managed, installed, args)
+        result = remove_installed_package(managed, installed, args, purge=args.purge)
         if result is not None:
             print(f"removed package: {result['package_id']} {result['package_version']}")
             print(f" - managed root: {result['managed_root']}")
             print(f" - removed version root: {result['removed_version_root']}")
+            print(f" - purge config: {'yes' if args.purge else 'no'}")
+            for path in result.get("purged_config_paths", []):
+                print(f"   removed config: {path}")
         else:
             print(f"reinstall failed: could not remove installed package {args.package}")
             return 1
@@ -1596,11 +1604,14 @@ def cmd_remove(args: argparse.Namespace) -> int:
             print(f"package not installed: {args.package}")
         return 1
     managed, installed = resolved
-    result = remove_installed_package(managed, installed, args)
+    result = remove_installed_package(managed, installed, args, purge=args.purge)
     if result is not None:
         print(f"removed package: {result['package_id']} {result['package_version']}")
         print(f" - managed root: {result['managed_root']}")
         print(f" - removed version root: {result['removed_version_root']}")
+        print(f" - purge config: {'yes' if args.purge else 'no'}")
+        for path in result.get("purged_config_paths", []):
+            print(f"   removed config: {path}")
         return 0
     print(f"remove plan for {args.package}")
     print(f" - network policy: offline-strict={'on' if offline_strict_enabled() else 'off'}")
@@ -1862,6 +1873,8 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
     installed_source_root = install_home / "src"
     installed_repo_root = install_home / "repos" / "ofpm" / "main"
     installed_repos_config = install_home / "config" / "repos.json"
+    purge_config = bool(getattr(args, "purge", False))
+    repo_config_action = "created"
     profile_path = Path(args.profile_path).expanduser().resolve() if args.profile_path else default_ofpm_profile_path(root_kind)
     bashrc_path = Path(args.bashrc_path).expanduser().resolve() if args.bashrc_path else (
         default_ofpm_system_bashrc_path() if root_kind == "system" else None
@@ -1883,7 +1896,11 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
         _copy_installed_repos(source_root, install_home, force=args.force)
         installed_repo_root.mkdir(parents=True, exist_ok=True)
         (install_home / "repos" / "ofpm" / "local-main").mkdir(parents=True, exist_ok=True)
-        save_repos_config(installed_repos_config, default_installed_repos(install_home))
+        if installed_repos_config.exists() and not purge_config:
+            repo_config_action = "preserved"
+        else:
+            repo_config_action = "reset" if installed_repos_config.exists() else "created"
+            save_repos_config(installed_repos_config, default_installed_repos(install_home))
         _write_text_file(output_path, content, force=args.force)
         os.chmod(output_path, 0o755)
 
@@ -1927,6 +1944,7 @@ def cmd_install_cli(args: argparse.Namespace) -> int:
     print(f" - installed source root: {installed_source_root}")
     print(f" - installed repo root: {installed_repo_root}")
     print(f" - repo config: {installed_repos_config}")
+    print(f" - repo config action: {repo_config_action}")
     if profile_path and not args.no_profile:
         print(f" - shell hook: {profile_path}")
     else:
@@ -2783,6 +2801,11 @@ Use `ofpm <command> -h` for command-specific options.""",
     reinstall_parser = subparsers.add_parser("reinstall", help="remove and install a package again")
     reinstall_parser.add_argument("package", help="package id to reinstall")
     reinstall_parser.add_argument("--version", help="reinstall a specific version")
+    reinstall_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="remove package-owned config before reinstalling",
+    )
     add_root_options(reinstall_parser)
     add_repo_query_options(reinstall_parser)
     reinstall_parser.set_defaults(func=cmd_reinstall)
@@ -2796,6 +2819,11 @@ Use `ofpm <command> -h` for command-specific options.""",
 
     remove_parser = subparsers.add_parser("remove", help="remove an installed package using its receipt")
     remove_parser.add_argument("package", help="package id to remove")
+    remove_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="remove package-owned config in addition to package files",
+    )
     add_root_options(remove_parser)
     add_repo_query_options(remove_parser)
     remove_parser.set_defaults(func=cmd_remove)
@@ -2865,6 +2893,11 @@ Use `ofpm <command> -h` for command-specific options.""",
         current_parser.add_argument("--profile-path", help="shell profile file to update")
         current_parser.add_argument("--bashrc-path", help="bashrc file to update")
         current_parser.add_argument("--symlink-path", help="launcher symlink path to create")
+        current_parser.add_argument(
+            "--purge",
+            action="store_true",
+            help="reset installed ofpm config instead of preserving it",
+        )
         current_parser.add_argument("--no-profile", action="store_true", help="do not update shell profile files")
         current_parser.add_argument("--no-symlink", action="store_true", help="do not create a launcher symlink")
         current_parser.add_argument("--force", action="store_true", help="overwrite existing launcher files")

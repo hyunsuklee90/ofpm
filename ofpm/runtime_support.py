@@ -126,6 +126,49 @@ def remove_public_executables(installed_state: dict[str, Any]) -> None:
             link_path.unlink()
 
 
+def _path_values(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def package_config_paths(managed_root: Path, package_data: dict[str, Any]) -> list[Path]:
+    metadata = package_data.get("metadata", {})
+    raw_paths = _path_values(metadata.get("config_dir")) + _path_values(metadata.get("config_paths"))
+    return [_managed_root_scoped_path(managed_root, raw_path) for raw_path in raw_paths if str(raw_path).strip()]
+
+
+def installed_config_paths(managed_root: Path, installed_state: dict[str, Any]) -> list[Path]:
+    package = installed_state.get("raw", {}).get("package", {})
+    raw_paths = _path_values(package.get("config_dir")) + _path_values(package.get("config_paths"))
+    return [_managed_root_scoped_path(managed_root, raw_path) for raw_path in raw_paths if str(raw_path).strip()]
+
+
+def _managed_root_scoped_path(managed_root: Path, raw_path: Any) -> Path:
+    path = Path(str(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = managed_root / path
+    resolved = path.resolve(strict=False)
+    resolved_root = managed_root.resolve(strict=False)
+    if resolved != resolved_root and resolved_root not in resolved.parents:
+        raise ValueError(f"config path is outside managed root: {path}")
+    return path
+
+
+def purge_installed_config(managed_root: Path, installed_state: dict[str, Any]) -> list[str]:
+    removed: list[str] = []
+    for path in installed_config_paths(managed_root, installed_state):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+            removed.append(str(path))
+        elif path.exists() or path.is_symlink():
+            path.unlink()
+            removed.append(str(path))
+    return removed
+
+
 def package_files_by_target(
     package_data: dict[str, Any],
     package_manifest: Path,
@@ -239,17 +282,23 @@ def install_managed_files_package(
             "source_artifacts": source_artifacts,
         },
     }
+    config_paths = package_config_paths(managed_root, package_data)
+    if config_paths:
+        state["package"]["config_paths"] = [str(path) for path in config_paths]
     state_file = managed_state_file(managed_root, package_id)
+    managed_objects: dict[str, Any] = {
+        "version_root": str(version_root),
+        "current_path": str(current_link),
+        "executables": executables,
+    }
+    if config_paths:
+        managed_objects["config_paths"] = [str(path) for path in config_paths]
     record_install(
         managed_root,
         state,
         provider="ofpm-native",
         strategy="managed-files",
-        managed_objects={
-            "version_root": str(version_root),
-            "current_path": str(current_link),
-            "executables": executables,
-        },
+        managed_objects=managed_objects,
         artifact_ref={"type": "source-artifacts", "paths": source_artifacts},
     )
     progress(f"[ofpm] install {package_id}@{version}: recorded installed state")
@@ -402,18 +451,24 @@ def install_archive_extract_package(
             ],
         },
     }
+    config_paths = package_config_paths(managed_root, package_data)
+    if config_paths:
+        state["package"]["config_paths"] = [str(path) for path in config_paths]
     state_file = managed_state_file(managed_root, package_id)
+    managed_objects = {
+        "version_root": str(version_root),
+        "current_path": str(current_link),
+        "executables": executables,
+        "artifacts_root": str(artifacts_root),
+    }
+    if config_paths:
+        managed_objects["config_paths"] = [str(path) for path in config_paths]
     record_install(
         managed_root,
         state,
         provider="ofpm-native",
         strategy="archive-extract",
-        managed_objects={
-            "version_root": str(version_root),
-            "current_path": str(current_link),
-            "executables": executables,
-            "artifacts_root": str(artifacts_root),
-        },
+        managed_objects=managed_objects,
         artifact_ref={"type": "stored-artifact", "paths": state["package"]["artifacts"]},
     )
     progress(f"[ofpm] install {package_id}@{version}: recorded installed state")

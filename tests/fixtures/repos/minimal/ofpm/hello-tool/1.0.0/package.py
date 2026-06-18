@@ -16,6 +16,7 @@ def package():
         "depends": [],
         "metadata": {
             "description": "tiny test executable",
+            "config_paths": ["config/hello-tool"],
         },
         "files": [
             {
